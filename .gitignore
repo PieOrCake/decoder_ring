@@ -1,0 +1,11 @@
+# Build output
+/build/
+/build-host/
+*.dll
+*.o
+*.obj
+
+# LLM-specific working files (never tracked)
+CLAUDE.md
+handover.md
+build-decoder-addon-prompt.md

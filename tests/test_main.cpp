@@ -6,6 +6,7 @@
 #include "resolve/ItemResolver.h"
 #include "resolve/SkinResolver.h"
 #include "resolve/SkillResolver.h"
+#include "resolve/PriceCache.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -148,7 +149,24 @@ static void test_skill_parse() {
     CHECK(m.facts[1].text == "Damage (x3)");
 }
 
+static void test_price_cache() {
+    Decoder::PriceCache pc;
+    pc.Initialize([](const std::string& url, std::vector<char>& out){
+        const char* j = R"({"buys":{"unit_price":100},"sells":{"unit_price":150}})";
+        out.assign(j, j + std::strlen(j)); return true;
+    });
+    DecoderPrice p;
+    CHECK(pc.Get(24, p) == false);   // cold -> kicks fetch
+    std::vector<uint32_t> done;
+    for (int i=0;i<200 && done.empty();++i){ pc.DrainCompleted(done); Decoder::PriceCache::SleepMs(5); }
+    CHECK(done.size()==1 && done[0]==24);
+    CHECK(pc.Get(24, p) == true);    // warm
+    CHECK(p.buy == 100); CHECK(p.sell == 150);
+    pc.Shutdown();
+}
+
 int main() {
+    test_price_cache();
     test_abi_is_pod();
     test_offline_build_label();
     test_offline_waypoint();

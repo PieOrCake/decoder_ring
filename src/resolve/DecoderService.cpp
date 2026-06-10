@@ -1,0 +1,105 @@
+#include "resolve/DecoderService.h"
+#include "resolve/AsyncResolver.h"
+#include "resolve/ItemResolver.h"
+#include "resolve/SkinResolver.h"
+#include "resolve/SkillResolver.h"
+#include "resolve/PriceCache.h"
+#include "resolve/OfflineResolve.h"
+#include "resolve/RecordFill.h"
+#include "chat/ChatLinks.h"
+#include <vector>
+#include <utility>
+#include <thread>
+#include <chrono>
+
+namespace Decoder {
+using namespace PieUI::ChatLinks;
+
+void DecoderService::SleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+
+struct DecoderService::Impl {
+    AsyncResolver<ItemTraits>  item;
+    AsyncResolver<SkinTraits>  skin;
+    AsyncResolver<SkillTraits> skill;
+    PriceCache                 price;
+    CompletionSink             sink;
+
+    // Build a resolved record from warm meta for emission.
+    void EmitResolved(uint8_t type, uint32_t id) {
+        DecoderRecord r;
+        if (type == LINK_ITEM)  { ItemMeta m; if (item.Get(id,m)) { InitRecord(r,type,id,DR_Resolved); CopyField(r.name,m.name); CopyField(r.iconUrl,m.icon); r.bound=m.bound; r.noSell=m.noSell?1:0; r.tradeable=m.tradeable?1:0; r.vendorValue=m.vendorValue; sink(r);} }
+        else if (type == LINK_SKIN)  { SkinMeta m; if (skin.Get(id,m)) { InitRecord(r,type,id,DR_Resolved); CopyField(r.name,m.name); CopyField(r.iconUrl,m.icon); sink(r);} }
+        else if (type == LINK_SKILL) { SkillMeta m; if (skill.Get(id,m)) { InitRecord(r,type,id,DR_Resolved); CopyField(r.name,m.name); CopyField(r.iconUrl,m.icon); CopyField(r.description,m.description);
+            uint8_t n = (uint8_t)(m.facts.size() < 16 ? m.facts.size() : 16);
+            for (uint8_t i=0;i<n;++i){ CopyField(r.facts[i].icon,m.facts[i].icon); CopyField(r.facts[i].text,m.facts[i].text);} r.factCount=n; sink(r);} }
+    }
+    void EmitFailed(uint8_t type, uint32_t id) {
+        DecoderRecord r; InitRecord(r, type, id, DR_Failed); sink(r);
+    }
+    template <typename Resolver>
+    void DrainResolver(Resolver& res, uint8_t type) {
+        std::vector<std::pair<uint32_t,bool>> done;
+        res.DrainCompleted(done);
+        for (auto& d : done) { if (d.second) EmitResolved(type, d.first); else EmitFailed(type, d.first); }
+    }
+};
+
+void DecoderService::Initialize(const std::string& dir, HttpFetch fetch, CompletionSink sink) {
+    m_p = new Impl();
+    m_p->sink = std::move(sink);
+    m_p->item.Initialize(dir, fetch);
+    m_p->skin.Initialize(dir, fetch);
+    m_p->skill.Initialize(dir, fetch);
+    m_p->price.Initialize(fetch);
+}
+void DecoderService::Shutdown() {
+    if (!m_p) return;
+    m_p->item.Shutdown(); m_p->skin.Shutdown(); m_p->skill.Shutdown(); m_p->price.Shutdown();
+    delete m_p; m_p = nullptr;
+}
+void DecoderService::SetFailCooldownSec(int s) {
+    if (!m_p) return;
+    m_p->item.SetFailCooldownSec(s); m_p->skin.SetFailCooldownSec(s); m_p->skill.SetFailCooldownSec(s);
+}
+
+DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::string& chatCode, DecoderRecord& out) {
+    // Offline types resolve synchronously from compiled-in data.
+    if (type == LINK_BUILD || type == LINK_MAP)
+        return ResolveOffline(type, chatCode, out) ? DR_Resolved : DR_Failed;
+
+    if (type == LINK_ITEM) {
+        ItemMeta m;
+        if (m_p->item.Get(id, m)) { InitRecord(out,type,id,DR_Resolved); CopyField(out.name,m.name); CopyField(out.iconUrl,m.icon);
+            out.bound=m.bound; out.noSell=m.noSell?1:0; out.tradeable=m.tradeable?1:0; out.vendorValue=m.vendorValue; return DR_Resolved; }
+        InitRecord(out,type,id,DR_NotReady); return DR_NotReady;
+    }
+    if (type == LINK_SKIN) {
+        SkinMeta m;
+        if (m_p->skin.Get(id, m)) { InitRecord(out,type,id,DR_Resolved); CopyField(out.name,m.name); CopyField(out.iconUrl,m.icon); return DR_Resolved; }
+        InitRecord(out,type,id,DR_NotReady); return DR_NotReady;
+    }
+    if (type == LINK_SKILL) {
+        SkillMeta m;
+        if (m_p->skill.Get(id, m)) { InitRecord(out,type,id,DR_Resolved); CopyField(out.name,m.name); CopyField(out.iconUrl,m.icon); CopyField(out.description,m.description);
+            uint8_t n=(uint8_t)(m.facts.size()<16?m.facts.size():16);
+            for (uint8_t i=0;i<n;++i){ CopyField(out.facts[i].icon,m.facts[i].icon); CopyField(out.facts[i].text,m.facts[i].text);} out.factCount=n; return DR_Resolved; }
+        InitRecord(out,type,id,DR_NotReady); return DR_NotReady;
+    }
+    InitRecord(out, type, id, DR_Failed);
+    return DR_Failed;   // unsupported type
+}
+
+DecoderStatus DecoderService::QueryPrice(uint32_t itemId, DecoderPrice& out) {
+    return m_p->price.Get(itemId, out) ? DR_Resolved : DR_NotReady;
+}
+
+void DecoderService::Tick() {
+    if (!m_p) return;
+    m_p->DrainResolver(m_p->item, LINK_ITEM);
+    m_p->DrainResolver(m_p->skin, LINK_SKIN);
+    m_p->DrainResolver(m_p->skill, LINK_SKILL);
+    m_p->item.Tick(); m_p->skin.Tick(); m_p->skill.Tick();
+    // Price completions don't carry a durable record; consumers re-query QueryPrice.
+    std::vector<uint32_t> pdone; m_p->price.DrainCompleted(pdone);
+}
+}

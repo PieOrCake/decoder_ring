@@ -7,6 +7,7 @@
 #include "resolve/SkinResolver.h"
 #include "resolve/SkillResolver.h"
 #include "resolve/PriceCache.h"
+#include "resolve/DecoderService.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -165,6 +166,54 @@ static void test_price_cache() {
     pc.Shutdown();
 }
 
+static void test_service_end_to_end() {
+    using namespace PieUI::ChatLinks;
+    std::vector<DecoderRecord> events;       // captured completion sink
+    bool failFirst = true;
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string& url, std::vector<char>& out){
+            if (failFirst) { failFirst = false; return false; }      // first fetch fails
+            const char* j = R"({"name":"Fireball","icon":"i","description":"d","facts":[]})";
+            out.assign(j, j + std::strlen(j)); return true;
+        },
+        [&](const DecoderRecord& r){ events.push_back(r); });
+
+    DecoderRecord r;
+    // (a) cold skill query -> NotReady, no event yet.
+    CHECK(svc.Resolve(LINK_SKILL, 5492, r) == DR_NotReady);
+    // Pump until an event lands (first fetch fails -> DR_Failed event).
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1);
+    CHECK(events[0].linkType == LINK_SKILL);
+    CHECK(events[0].id == 5492);
+    CHECK(events[0].status == DR_Failed);
+
+    // (b) re-query after failure (cooldown bypassed) -> retried -> Resolved event.
+    svc.SetFailCooldownSec(0);
+    events.clear();
+    CHECK(svc.Resolve(LINK_SKILL, 5492, r) == DR_NotReady);
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1);
+    CHECK(events[0].status == DR_Resolved);
+    CHECK(std::strcmp(events[0].name, "Fireball") == 0);
+
+    // (c) warm query now returns data immediately, no new event.
+    events.clear();
+    CHECK(svc.Resolve(LINK_SKILL, 5492, r) == DR_Resolved);
+    CHECK(std::strcmp(r.name, "Fireball") == 0);
+    svc.Tick();
+    CHECK(events.empty());
+
+    // (d) offline build type resolves synchronously, never NotReady.
+    DecodedBuildLink b{}; b.profession = PROF_MESMER; b.specs[2].spec_id = 59;
+    DecoderRecord br;
+    CHECK(svc.Resolve(LINK_BUILD, 0, EncodeBuild(b), br) == DR_Resolved);
+    CHECK(std::strcmp(br.name, "Mirage Build") == 0);
+
+    svc.Shutdown();
+}
+
 int main() {
     test_price_cache();
     test_abi_is_pod();
@@ -174,6 +223,7 @@ int main() {
     test_item_parse();
     test_skin_parse();
     test_skill_parse();
+    test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

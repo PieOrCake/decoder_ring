@@ -15,6 +15,12 @@
 
 namespace Decoder {
 
+// Outcome of a warm lookup. The point of the tri-state (vs a bare bool) is to let
+// the caller distinguish "a terminal event WILL follow" (Pending) from "this IS
+// the terminal answer, synchronously" (Warm / Failed) — so a known or knowably-
+// invalid failure is never mis-reported as not-ready and left to strand.
+enum class GetState { Warm, Pending, Failed };
+
 // Generic async id->Meta resolver: a worker thread fetches via an injected
 // HttpFetch, parses with Traits::Parse, never persists empties/failures, applies
 // a fail cooldown, and (optionally) disk-caches via Traits::ToJson/FromJson.
@@ -50,24 +56,32 @@ public:
 
     void SetFailCooldownSec(int s) { m_FailCooldownSec = s; }
 
-    // Warm -> copies into out, true. Cold/failed-in-cooldown -> kicks a fetch
-    // (unless already pending or cooling down) and returns false.
-    bool Get(uint32_t id, Meta& out) {
-        if (id == 0) return false;
+    // Warm    -> copies into out, returns Warm (synchronous terminal answer).
+    // Pending  -> a fetch is in flight (just queued, or already pending); a terminal
+    //             completion event is GUARANTEED to follow — caller reports NotReady.
+    // Failed   -> a synchronous terminal failure that will emit NO event: either a
+    //             knowably-invalid id (no fetch is worth scheduling) or a known
+    //             failure still inside its cooldown. Caller reports Failed now.
+    GetState Get(uint32_t id, Meta& out) {
+        // Knowably invalid without a fetch: id 0 is never a real item/skin/skill id
+        // (/v2/.../0 always errors). We deliberately cap nothing else — there is no
+        // reliable upper bound on GW2 ids, so any non-zero id goes through a fetch
+        // and fails via the normal async path if the API rejects it.
+        if (id == 0) return GetState::Failed;
         std::lock_guard<std::mutex> lk(m_Mtx);
         auto it = m_Items.find(id);
-        if (it != m_Items.end()) { out = it->second; return true; }
-        if (m_Pending.count(id)) return false;
+        if (it != m_Items.end()) { out = it->second; return GetState::Warm; }
+        if (m_Pending.count(id)) return GetState::Pending;   // event will follow the in-flight fetch
         auto fit = m_Fail.find(id);
         if (fit != m_Fail.end()) {
             auto age = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - fit->second).count();
-            if (age < m_FailCooldownSec) return false;
+            if (age < m_FailCooldownSec) return GetState::Failed;   // known failure, in cooldown -> synchronous failed
         }
         m_Pending.insert(id);
         m_Queue.push_back(id);
         m_CV.notify_one();
-        return false;
+        return GetState::Pending;                            // freshly queued -> event guaranteed
     }
 
     // Move completed (id, success) pairs out for the service to emit events from.

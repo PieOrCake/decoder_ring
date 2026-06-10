@@ -91,25 +91,28 @@ static void test_async_state_machine() {
         std::string s = "OK:" + url; out.assign(s.begin(), s.end()); return true;
     });
 
+    using GS = Decoder::GetState;
     FakeMeta m;
-    // Cold query -> NotReady (kicks fetch).
-    CHECK(res.Get(42, m) == false);
+    // Knowably-invalid id -> synchronous Failed: no fetch, no completion.
+    CHECK(res.Get(0, m) == GS::Failed);
+    // Cold query -> Pending (kicks fetch; a completion is guaranteed to follow).
+    CHECK(res.Get(42, m) == GS::Pending);
     // Drive the worker to completion (poll the completed queue).
     std::vector<std::pair<uint32_t,bool>> done;
     for (int i = 0; i < 200 && done.empty(); ++i) { res.DrainCompleted(done); R::SleepMs(5); }
     CHECK(done.size() == 1);
     CHECK(done[0].first == 42);
     CHECK(done[0].second == false);            // first fetch failed
-    CHECK(res.Get(42, m) == false);            // still not warm (in fail cooldown)
+    CHECK(res.Get(42, m) == GS::Failed);       // known failure, still in cooldown -> synchronous Failed
 
-    // Re-query with cooldown bypassed -> retried, this time succeeds.
+    // Re-query with cooldown bypassed -> retried (Pending again), this time succeeds.
     res.SetFailCooldownSec(0);
-    CHECK(res.Get(42, m) == false);            // kicks retry
+    CHECK(res.Get(42, m) == GS::Pending);      // cooldown expired -> kicks a fresh retry
     done.clear();
     for (int i = 0; i < 200 && done.empty(); ++i) { res.DrainCompleted(done); R::SleepMs(5); }
     CHECK(done.size() == 1);
     CHECK(done[0].second == true);             // retry succeeded
-    CHECK(res.Get(42, m) == true);             // now warm
+    CHECK(res.Get(42, m) == GS::Warm);         // now warm
     CHECK(m.value == "OK:fake://42");
     res.Shutdown();
 }
@@ -216,6 +219,93 @@ static void test_service_end_to_end() {
     svc.Shutdown();
 }
 
+// Fix A — synchronous strand paths must surface as DR_Failed, never not-ready.
+static void test_resolve_synchronous_failed_paths() {
+    using namespace PieUI::ChatLinks;
+    std::vector<DecoderRecord> events;
+    std::atomic<int> fetches{0};
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string&, std::vector<char>&)->bool{ ++fetches; return false; },  // every fetch fails
+        [&](const DecoderRecord& r){ events.push_back(r); });
+
+    DecoderRecord r;
+    // (1) Knowably-invalid id 0 -> synchronous DR_Failed, no fetch, no event EVER.
+    CHECK(svc.Resolve(LINK_ITEM, 0, r) == DR_Failed);
+    CHECK(r.status == DR_Failed);
+    CHECK(r.linkType == LINK_ITEM && r.id == 0);          // correlation key still carried
+    for (int i=0;i<20;++i){ svc.Tick(); Decoder::DecoderService::SleepMs(2); }
+    CHECK(fetches.load() == 0);                            // id 0 never scheduled a fetch
+    CHECK(events.empty());                                 // and was never left awaiting an event
+
+    // Prime a real (async) failure for id 77, then confirm the in-cooldown re-query
+    // resolves SYNCHRONOUSLY to failed rather than stranding on not-ready.
+    CHECK(svc.Resolve(LINK_ITEM, 77, r) == DR_NotReady);  // kicks a doomed fetch
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1);
+    CHECK(events[0].status == DR_Failed && events[0].id == 77);  // async terminal event landed
+
+    // (2) Re-query 77 while still inside the (default) cooldown -> synchronous DR_Failed.
+    int fetchesBefore = fetches.load();
+    events.clear();
+    CHECK(svc.Resolve(LINK_ITEM, 77, r) == DR_Failed);
+    svc.Tick();
+    CHECK(fetches.load() == fetchesBefore);               // no new fetch scheduled
+    CHECK(events.empty());                                 // synchronous -> emitted nothing
+
+    // (3) Once cooldown is bypassed, the same id is allowed to retry-fetch again.
+    svc.SetFailCooldownSec(0);
+    CHECK(svc.Resolve(LINK_ITEM, 77, r) == DR_NotReady);  // retry kicked
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1 && events[0].status == DR_Failed);  // retry ran and emitted again
+    svc.Shutdown();
+}
+
+// Fix A — the core invariant: across resolved / async-failed(timeout) / invalid /
+// in-cooldown, the number of terminal outcomes (synchronous answers + events) equals
+// the number of requests issued. No request ends without exactly one terminal outcome.
+static void test_terminal_outcome_invariant() {
+    using namespace PieUI::ChatLinks;
+    int events = 0;
+    Decoder::DecoderService svc;
+    // Succeed only for the item whose id ends in '8'. Everything else returns false —
+    // exactly how a WinINet connect/receive TIMEOUT (or 404/malformed body) surfaces —
+    // and must follow the failed path, never strand.
+    svc.Initialize("",
+        [&](const std::string& url, std::vector<char>& out)->bool{
+            if (!url.empty() && url.back()=='8') {
+                const char* j = R"({"name":"Sword","icon":"i"})";
+                out.assign(j, j+std::strlen(j)); return true;
+            }
+            return false;   // models timeout / 404 / malformed -> failed
+        },
+        [&](const DecoderRecord&){ ++events; });
+
+    int requests = 0, syncTerminal = 0;
+    auto issue = [&](uint8_t t, uint32_t id)->DecoderStatus{
+        DecoderRecord r; ++requests;
+        DecoderStatus s = svc.Resolve(t, id, r);
+        if (s == DR_Resolved || s == DR_Failed) ++syncTerminal;   // a terminal answer, synchronously
+        return s;
+    };
+
+    CHECK(issue(LINK_ITEM, 0) == DR_Failed);     // invalid -> synchronous terminal
+    CHECK(issue(LINK_ITEM, 8) == DR_NotReady);   // async success -> event later
+    CHECK(issue(LINK_ITEM, 7) == DR_NotReady);   // async timeout/fail -> event later
+
+    for (int i=0;i<400 && events<2;++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events == 2);                            // both async requests reached a terminal event
+
+    int before = events;
+    CHECK(issue(LINK_ITEM, 7) == DR_Failed);      // in-cooldown re-query -> synchronous terminal
+    svc.Tick();
+    CHECK(events == before);                       // emitted nothing extra
+
+    CHECK(requests == 4);
+    CHECK(syncTerminal + events == requests);      // INVARIANT: exactly one terminal outcome per request
+    svc.Shutdown();
+}
+
 // Provider-side lifetime guarantee for the unload/crash fix: tearing the service
 // down while a fetch is IN FLIGHT must (a) block until that fetch returns — so no
 // worker outlives the object and no completion fires into freed state — and (b)
@@ -257,6 +347,8 @@ static void test_service_teardown_awaits_inflight_fetch() {
 
 int main() {
     test_price_cache();
+    test_resolve_synchronous_failed_paths();
+    test_terminal_outcome_invariant();
     test_service_teardown_awaits_inflight_fetch();
     test_abi_is_pod();
     test_offline_build_label();

@@ -41,9 +41,9 @@ struct DecoderService::Impl {
     // Build a resolved record from warm meta for emission.
     void EmitResolved(uint8_t type, uint32_t id) {
         DecoderRecord r;
-        if (type == LINK_ITEM)       { ItemMeta m;  if (item.Get(id, m))  { InitRecord(r, type, id, DR_Resolved); FillItem(r, m);  sink(r); } }
-        else if (type == LINK_SKIN)  { SkinMeta m;  if (skin.Get(id, m))  { InitRecord(r, type, id, DR_Resolved); FillSkin(r, m);  sink(r); } }
-        else if (type == LINK_SKILL) { SkillMeta m; if (skill.Get(id, m)) { InitRecord(r, type, id, DR_Resolved); FillSkill(r, m); sink(r); } }
+        if (type == LINK_ITEM)       { ItemMeta m;  if (item.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillItem(r, m);  sink(r); } }
+        else if (type == LINK_SKIN)  { SkinMeta m;  if (skin.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkin(r, m);  sink(r); } }
+        else if (type == LINK_SKILL) { SkillMeta m; if (skill.Get(id, m) == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkill(r, m); sink(r); } }
     }
     void EmitFailed(uint8_t type, uint32_t id) {
         DecoderRecord r; InitRecord(r, type, id, DR_Failed); sink(r);
@@ -81,20 +81,33 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
     if (type == LINK_BUILD || type == LINK_MAP)
         return ResolveOffline(type, id, chatCode, out) ? DR_Resolved : DR_Failed;
 
+    // Map the warm-lookup tri-state to a status. Pending is the ONLY not-ready
+    // outcome and it guarantees a later completion event; Warm/Failed are terminal
+    // here and now (Failed = knowably-invalid id or a known in-cooldown failure),
+    // so no request leaves this function stranded on not-ready.
     if (type == LINK_ITEM) {
         ItemMeta m;
-        if (m_p->item.Get(id, m)) { InitRecord(out, type, id, DR_Resolved); Impl::FillItem(out, m); return DR_Resolved; }
-        InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+        switch (m_p->item.Get(id, m)) {
+            case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillItem(out, m); return DR_Resolved;
+            case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+            case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
+        }
     }
     if (type == LINK_SKIN) {
         SkinMeta m;
-        if (m_p->skin.Get(id, m)) { InitRecord(out, type, id, DR_Resolved); Impl::FillSkin(out, m); return DR_Resolved; }
-        InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+        switch (m_p->skin.Get(id, m)) {
+            case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillSkin(out, m); return DR_Resolved;
+            case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+            case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
+        }
     }
     if (type == LINK_SKILL) {
         SkillMeta m;
-        if (m_p->skill.Get(id, m)) { InitRecord(out, type, id, DR_Resolved); Impl::FillSkill(out, m); return DR_Resolved; }
-        InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+        switch (m_p->skill.Get(id, m)) {
+            case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillSkill(out, m); return DR_Resolved;
+            case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+            case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
+        }
     }
     InitRecord(out, type, id, DR_Failed);
     return DR_Failed;   // unsupported type

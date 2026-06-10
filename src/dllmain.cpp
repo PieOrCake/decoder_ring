@@ -67,12 +67,29 @@ static void AddonLoad(AddonAPI_t* aApi) {
 }
 
 static void AddonUnload() {
+    // (1) Neutralise the published function table FIRST. The DataLink block is
+    // owned by Nexus and OUTLIVES this DLL — there is no DataLink_Free — so a
+    // consumer that calls DataLink_Get after we unload gets this very struct back.
+    // Left intact, its pointers would aim into unloaded code => crash on call.
+    // Zeroing them makes a re-reading consumer see apiVersion 0 / null and decline.
+    if (g_api) { g_api->apiVersion = 0; g_api->Resolve = nullptr; g_api->QueryPrice = nullptr; }
+
+    // (2) Signal disappearance (mirror of the READY handshake) so subscribed
+    // consumers drop any cached pointer immediately, not just on their next probe.
+    if (APIDefs && APIDefs->Events_Raise) APIDefs->Events_Raise(EV_DECODER_RING_UNLOADING, nullptr);
+
+    // (3) Stop our render pump and our own subscription so nothing of ours fires
+    // mid- or post-teardown.
+    if (APIDefs && APIDefs->GUI_Deregister) APIDefs->GUI_Deregister(AddonRender);
     if (APIDefs && g_subscribed && APIDefs->Events_Unsubscribe)
         APIDefs->Events_Unsubscribe(EV_DECODER_RING_PING, OnPing);
-    if (APIDefs && APIDefs->GUI_Deregister) APIDefs->GUI_Deregister(AddonRender);
     g_subscribed = false;
-    g_api = nullptr;          // shared resource is owned/freed by Nexus
+
+    // (4) Join worker threads. Shutdown() blocks until any in-flight fetch returns,
+    // so no fetch completes into freed state and no thread outlives the DLL.
     g_service.Shutdown();
+
+    g_api = nullptr;          // block itself stays alive in Nexus; we just drop our handle
     APIDefs = nullptr;
 }
 

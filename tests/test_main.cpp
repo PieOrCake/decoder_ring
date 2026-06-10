@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <type_traits>
 
 static int g_fail = 0;
@@ -215,8 +216,48 @@ static void test_service_end_to_end() {
     svc.Shutdown();
 }
 
+// Provider-side lifetime guarantee for the unload/crash fix: tearing the service
+// down while a fetch is IN FLIGHT must (a) block until that fetch returns — so no
+// worker outlives the object and no completion fires into freed state — and (b)
+// emit nothing afterwards. Also asserts the facade is safe to call post-teardown.
+static void test_service_teardown_awaits_inflight_fetch() {
+    using namespace PieUI::ChatLinks;
+    std::atomic<bool> started{false}, release{false};
+    std::atomic<int> events{0};
+
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string&, std::vector<char>&) -> bool {
+            started = true;
+            while (!release.load()) Decoder::DecoderService::SleepMs(2);   // hold the worker mid-fetch
+            return false;                                                  // then fail (irrelevant here)
+        },
+        [&](const DecoderRecord&){ ++events; });
+
+    DecoderRecord r;
+    CHECK(svc.Resolve(LINK_ITEM, 99, r) == DR_NotReady);                   // kicks the (blocking) fetch
+    for (int i=0;i<200 && !started.load();++i) Decoder::DecoderService::SleepMs(2);
+    CHECK(started.load());                                                 // worker is now inside the fetch
+
+    std::atomic<bool> shutdownDone{false};
+    std::thread t([&]{ svc.Shutdown(); shutdownDone = true; });
+
+    // Shutdown MUST NOT return while the fetch is held — it joins the worker.
+    for (int i=0;i<25 && !shutdownDone.load();++i) Decoder::DecoderService::SleepMs(2);
+    CHECK(!shutdownDone.load());                                           // proves teardown awaits in-flight fetch
+
+    release = true;                                                       // let the fetch (and worker) finish
+    t.join();
+    CHECK(shutdownDone.load());
+    CHECK(events == 0);                                                    // nothing emitted into freed state
+
+    // Facade is safe to call after teardown: graceful DR_Failed, never a crash.
+    CHECK(svc.Resolve(LINK_ITEM, 99, r) == DR_Failed);
+}
+
 int main() {
     test_price_cache();
+    test_service_teardown_awaits_inflight_fetch();
     test_abi_is_pod();
     test_offline_build_label();
     test_offline_waypoint();

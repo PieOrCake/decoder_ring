@@ -28,52 +28,62 @@ regardless of which addon loads first, and cannot deadlock in either direction.
 2. Subscribes `EV_DECODER_RING_PING` — replies to any ping by re-raising `EV_DECODER_RING_READY`.
 3. Raises `EV_DECODER_RING_READY` immediately.
 
+**How the service behaves on its own unload:**
+1. Zeroes the published function table (`apiVersion = 0`, pointers `nullptr`). The DataLink block
+   itself survives — it is owned by Nexus, not the addon — but it is now neutralised.
+2. Raises `EV_DECODER_RING_UNLOADING` so subscribed consumers can drop references immediately.
+3. Tears down its threads and event subscriptions.
+
+> **Critical:** the DataLink block outlives the DLL. After unload, `DataLink_Get` still returns a
+> non-null pointer to the (now-zeroed) struct. **Never call a `DecoderRingApi*` without first
+> checking `apiVersion == DECODER_RING_API_VERSION` — a stale pointer to an unloaded service is the
+> single most likely way to crash the game.** See [section 7](#7-consumer-lifetime-contract-required).
+
 **What your addon must do on its own load (in this order):**
 
 ```cpp
-static DecoderRingApi* g_decoder = nullptr;
-
-// Called when Decoder Ring announces (or re-announces) that its API is live.
-static void OnDecoderReady(void*) {
+// Do NOT cache a DecoderRingApi* across calls. Re-validate before EVERY use via
+// this accessor — it is a cheap registry lookup, and it is the only thing that is
+// safe once Decoder Ring can unload at any time.
+static DecoderRingApi* GetDecoder() {
     auto* api = static_cast<DecoderRingApi*>(
         APIDefs->DataLink_Get(DECODER_RING_DATALINK));
-    if (api && api->apiVersion == DECODER_RING_API_VERSION)
-        g_decoder = api;
+    return (api && api->apiVersion == DECODER_RING_API_VERSION) ? api : nullptr;
 }
+
+// READY/UNLOADING are notifications for UI state only — they let you flip a
+// "present" indicator live. They are NOT a substitute for GetDecoder() at call time.
+static void OnDecoderReady(void*)     { /* re-detect presence; refresh any "present" indicator */ }
+static void OnDecoderUnloading(void*) { /* mark absent; drop any cached record/pending state    */ }
 
 // In your AddonLoad:
 void AddonLoad(AddonAPI_t* aApi) {
     APIDefs = aApi;
 
-    // 1. Subscribe the READY event before doing anything else.
-    APIDefs->Events_Subscribe(EV_DECODER_RING_READY, OnDecoderReady);
+    // 1. Subscribe appearance AND disappearance before anything else.
+    APIDefs->Events_Subscribe(EV_DECODER_RING_READY,     OnDecoderReady);
+    APIDefs->Events_Subscribe(EV_DECODER_RING_UNLOADING, OnDecoderUnloading);
 
-    // 2. Try DataLink_Get immediately — covers the case where Decoder loaded first
-    //    and you already missed the READY event.
-    auto* api = static_cast<DecoderRingApi*>(
-        APIDefs->DataLink_Get(DECODER_RING_DATALINK));
-    if (api && api->apiVersion == DECODER_RING_API_VERSION)
-        g_decoder = api;
-
-    // 3. Raise a PING — covers the case where Decoder loads after you do.
-    //    Decoder will respond by re-raising EV_DECODER_RING_READY, which fires
-    //    your handler above.
+    // 2. Raise a PING — if Decoder loaded after you, it replies with READY; if it
+    //    loaded first, this still prompts a fresh READY. Either way GetDecoder()
+    //    below will reflect current truth.
     APIDefs->Events_Raise(EV_DECODER_RING_PING, nullptr);
 }
 ```
 
 **Why this cannot deadlock:**
-- Decoder first → step 2 finds the pointer immediately; the event is belt-and-suspenders.
-- Consumer first → step 2 returns null, but Decoder's later load triggers the PING reply, which
-  fires `OnDecoderReady`.
-- Decoder absent forever → `DataLink_Get` stays null and no READY event ever fires. `g_decoder`
-  remains null and the consumer falls back gracefully (see section 6).
+- Decoder first → `GetDecoder()` returns the pointer the moment you call it; the PING reply is
+  belt-and-suspenders.
+- Consumer first → `GetDecoder()` returns null until Decoder's later load triggers the PING reply
+  (READY), after which `GetDecoder()` starts returning a valid pointer.
+- Decoder absent forever → `GetDecoder()` always returns null and the consumer falls back gracefully
+  (see section 6).
 
-On unload, unsubscribe the event:
+On unload, unsubscribe both events:
 
 ```cpp
-APIDefs->Events_Unsubscribe(EV_DECODER_RING_READY, OnDecoderReady);
-g_decoder = nullptr;
+APIDefs->Events_Unsubscribe(EV_DECODER_RING_READY,     OnDecoderReady);
+APIDefs->Events_Unsubscribe(EV_DECODER_RING_UNLOADING, OnDecoderUnloading);
 ```
 
 ---
@@ -97,10 +107,11 @@ DecoderStatus (*Resolve)(uint8_t linkType, uint32_t id,
 
 ```cpp
 void ShowChatLinkTooltip(uint8_t linkType, uint32_t id, const char* chatCode) {
-    if (!g_decoder) { RenderFallback(linkType, id); return; }
+    DecoderRingApi* decoder = GetDecoder();          // re-validate every call — never cache
+    if (!decoder) { RenderFallback(linkType, id); return; }
 
     DecoderRecord rec{};
-    DecoderStatus status = g_decoder->Resolve(linkType, id, chatCode, &rec);
+    DecoderStatus status = decoder->Resolve(linkType, id, chatCode, &rec);
 
     switch (status) {
     case DR_Resolved:
@@ -197,8 +208,9 @@ Returns `DR_Resolved` with `*out` filled, or `DR_NotReady` if a fetch is in flig
 miss event for prices — poll on the next frame or tooltip refresh.
 
 ```cpp
+DecoderRingApi* decoder = GetDecoder();   // re-validate every call — never cache
 DecoderPrice price{};
-if (g_decoder && g_decoder->QueryPrice(itemId, &price) == DR_Resolved) {
+if (decoder && decoder->QueryPrice(itemId, &price) == DR_Resolved) {
     // price.buy  = highest buy order, copper (-1 if no listings)
     // price.sell = lowest sell listing, copper (-1 if no listings)
     RenderPrice(price.buy, price.sell);
@@ -209,9 +221,9 @@ if (g_decoder && g_decoder->QueryPrice(itemId, &price) == DR_Resolved) {
 
 ## 6. Graceful-degradation contract
 
-**Detecting absence:** `g_decoder` remains `nullptr` if `DataLink_Get` never returns a valid
-pointer and no `EV_DECODER_RING_READY` event fires. Check `g_decoder` before every call —
-the function pointers simply do not exist when the service is absent.
+**Detecting absence:** `GetDecoder()` returns `nullptr` whenever `DataLink_Get` yields no struct,
+or yields the post-unload struct whose `apiVersion` is now `0`. Call `GetDecoder()` before every
+use — never a cached pointer — so "absent" and "just unloaded" are handled identically and safely.
 
 **What still works without the service:**
 
@@ -230,19 +242,59 @@ Only API-resolved names and metadata for item, skin, and skill links go missing 
 the GW2 `/v2` API and the service's disk cache. Render these as "unknown item" / "unknown skill"
 placeholders rather than crashing or blocking.
 
-**The rule:** A consumer must never crash because `g_decoder` is null. Guard every call site:
+**The rule:** A consumer must never crash because the service is absent. Guard every call site
+through `GetDecoder()`:
 
 ```cpp
-if (!g_decoder) {
+DecoderRingApi* decoder = GetDecoder();
+if (!decoder) {
     // Fall back to structural / vendored rendering.
     RenderFallback(linkType, id);
     return;
 }
 DecoderRecord rec{};
-g_decoder->Resolve(linkType, id, chatCode, &rec);
+decoder->Resolve(linkType, id, chatCode, &rec);
 // ...
 ```
 
-**Version mismatch:** If `DataLink_Get` returns non-null but `api->apiVersion !=
-DECODER_RING_API_VERSION`, treat it as absent — the struct layout may have changed and calling
-through mismatched function pointers is undefined behaviour. Do not store the pointer.
+**Version mismatch:** If `DataLink_Get` returns non-null but `apiVersion !=
+DECODER_RING_API_VERSION`, treat it as absent — the struct layout may have changed (or the service
+just unloaded and zeroed it) and calling through mismatched/null pointers is undefined behaviour.
+`GetDecoder()` already folds this check in. Do not store the pointer.
+
+---
+
+## 7. Consumer lifetime contract (REQUIRED — prevents crashes)
+
+Decoder Ring is an optional provider that can **load or unload at any time** — disabled in the
+Nexus addon manager, updated, or crashed. "Service absent" is a normal runtime state, not an error.
+The provider hardens itself (it zeroes its published pointers and raises `EV_DECODER_RING_UNLOADING`
+on the way out), but a consumer that caches a raw function pointer can still crash itself. These
+four rules are mandatory; they are the canonical pattern every consumer should copy.
+
+1. **Decoder Ring may appear and disappear at any time.** Tolerate both, live, with no game restart.
+   It can also reappear (re-enabled) — handle the round trip absent → present → absent → present.
+
+2. **Never cache the exported function pointer across calls.** The `DecoderRingApi*` from
+   `DataLink_Get` points *into Decoder Ring's DLL code*. When the addon unloads, that code is gone
+   but the DataLink block (Nexus-owned) remains — so a stale pointer still looks non-null and
+   jumping through it crashes the game. **Re-resolve via `GetDecoder()` immediately before every
+   use** and only call when it returns non-null. A cheap registry lookup per call is the price of
+   safety.
+
+3. **Subscribe both lifecycle events and drop references on disappearance.** Subscribe
+   `EV_DECODER_RING_READY` (appearance) to refresh your "present" indicator, and
+   `EV_DECODER_RING_UNLOADING` (disappearance) to immediately mark the service absent and discard
+   any cached record or pending correlation key. Re-subscription is not needed across a toggle —
+   your subscriptions persist for your own addon's lifetime; only your *view* of presence changes.
+
+4. **With Decoder Ring absent, degrade to local structural decode and never crash.** Vendor
+   `ChatLinks` (`src/chat/`) to decode link structure offline (type byte, id, byte spans), derive
+   build labels from `SpecData.h` and waypoint names from the vendored table, and render
+   "unknown item/skin/skill" placeholders for the API-only fields. Absence is a rendering mode, not
+   a failure.
+
+**Presence indicators must be live, not latched.** If your UI shows "Decoder Ring: present", drive
+it from `GetDecoder() != nullptr` (or the READY/UNLOADING events), re-evaluated each frame — never
+from a value captured once at load. A latched indicator is how a consumer convinces itself the
+service is present after it has unloaded, and then calls into dead code.

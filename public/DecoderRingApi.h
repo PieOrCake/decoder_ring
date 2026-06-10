@@ -23,6 +23,11 @@
 #define DECODER_RING_DATALINK      "DECODER_RING_API"
 // Service announces its API is live (raised on load + in reply to a ping).
 #define EV_DECODER_RING_READY      "EV_DECODER_RING_READY"
+// Service announces it is unloading. Consumers MUST drop any cached DecoderRingApi*
+// on receipt and treat the service as absent until the next EV_DECODER_RING_READY.
+// The DataLink block is Nexus-owned and survives the unload, but its function
+// pointers are zeroed before this fires — calling them after unload is a crash.
+#define EV_DECODER_RING_UNLOADING  "EV_DECODER_RING_UNLOADING"
 // A consumer pings to ask the service to (re-)announce readiness.
 #define EV_DECODER_RING_PING       "EV_DECODER_RING_PING"
 // A background resolution landed. Payload: DecoderRecord* (synchronous).

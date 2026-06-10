@@ -3,6 +3,9 @@
 #include "resolve/OfflineResolve.h"
 #include "chat/ChatLinks.h"
 #include "resolve/AsyncResolver.h"
+#include "resolve/ItemResolver.h"
+#include "resolve/SkinResolver.h"
+#include "resolve/SkillResolver.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -107,11 +110,52 @@ static void test_async_state_machine() {
     res.Shutdown();
 }
 
+static std::vector<char> Bytes(const char* s) { return std::vector<char>(s, s + std::strlen(s)); }
+
+static void test_item_parse() {
+    const char* json = R"({"name":"Berserker's Sword","icon":"https://x/sword.png",
+        "vendor_value":33,"flags":["AccountBound","NoSell"],"type":"Weapon",
+        "details":{"type":"Sword"}})";
+    Decoder::ItemMeta m;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(json), m));
+    CHECK(m.name == "Berserker's Sword");
+    CHECK(m.icon == "https://x/sword.png");
+    CHECK(m.vendorValue == 33);
+    CHECK(m.noSell == true);
+    CHECK(m.bound == DB_AccountOnAcquire);
+    CHECK(m.tradeable == false);   // account-bound-on-acquire => not tradeable
+}
+
+static void test_skin_parse() {
+    const char* json = R"({"name":"Mistforged Hero's","icon":"https://x/skin.png"})";
+    Decoder::SkinMeta m;
+    CHECK(Decoder::SkinTraits::Parse(Bytes(json), m));
+    CHECK(m.name == "Mistforged Hero's");
+    CHECK(m.icon == "https://x/skin.png");
+}
+
+static void test_skill_parse() {
+    const char* json = R"({"name":"Fireball","icon":"https://x/fb.png",
+        "description":"Lob a fireball.","facts":[
+          {"type":"Range","text":"Range","value":1200},
+          {"type":"Damage","text":"Damage","hit_count":3}]})";
+    Decoder::SkillMeta m;
+    CHECK(Decoder::SkillTraits::Parse(Bytes(json), m));
+    CHECK(m.name == "Fireball");
+    CHECK(m.description == "Lob a fireball.");
+    CHECK(m.facts.size() == 2);
+    CHECK(m.facts[0].text == "Range: 1200");
+    CHECK(m.facts[1].text == "Damage (x3)");
+}
+
 int main() {
     test_abi_is_pod();
     test_offline_build_label();
     test_offline_waypoint();
     test_async_state_machine();
+    test_item_parse();
+    test_skin_parse();
+    test_skill_parse();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

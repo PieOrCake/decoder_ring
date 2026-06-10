@@ -24,14 +24,26 @@ struct DecoderService::Impl {
     PriceCache                 price;
     CompletionSink             sink;
 
+    static void FillItem(DecoderRecord& r, const ItemMeta& m) {
+        CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);
+        r.bound = m.bound; r.noSell = m.noSell ? 1 : 0; r.tradeable = m.tradeable ? 1 : 0; r.vendorValue = m.vendorValue;
+    }
+    static void FillSkin(DecoderRecord& r, const SkinMeta& m) {
+        CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);
+    }
+    static void FillSkill(DecoderRecord& r, const SkillMeta& m) {
+        CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon); CopyField(r.description, m.description);
+        uint8_t n = (uint8_t)(m.facts.size() < 16 ? m.facts.size() : 16);
+        for (uint8_t i = 0; i < n; ++i) { CopyField(r.facts[i].icon, m.facts[i].icon); CopyField(r.facts[i].text, m.facts[i].text); }
+        r.factCount = n;
+    }
+
     // Build a resolved record from warm meta for emission.
     void EmitResolved(uint8_t type, uint32_t id) {
         DecoderRecord r;
-        if (type == LINK_ITEM)  { ItemMeta m; if (item.Get(id,m)) { InitRecord(r,type,id,DR_Resolved); CopyField(r.name,m.name); CopyField(r.iconUrl,m.icon); r.bound=m.bound; r.noSell=m.noSell?1:0; r.tradeable=m.tradeable?1:0; r.vendorValue=m.vendorValue; sink(r);} }
-        else if (type == LINK_SKIN)  { SkinMeta m; if (skin.Get(id,m)) { InitRecord(r,type,id,DR_Resolved); CopyField(r.name,m.name); CopyField(r.iconUrl,m.icon); sink(r);} }
-        else if (type == LINK_SKILL) { SkillMeta m; if (skill.Get(id,m)) { InitRecord(r,type,id,DR_Resolved); CopyField(r.name,m.name); CopyField(r.iconUrl,m.icon); CopyField(r.description,m.description);
-            uint8_t n = (uint8_t)(m.facts.size() < 16 ? m.facts.size() : 16);
-            for (uint8_t i=0;i<n;++i){ CopyField(r.facts[i].icon,m.facts[i].icon); CopyField(r.facts[i].text,m.facts[i].text);} r.factCount=n; sink(r);} }
+        if (type == LINK_ITEM)       { ItemMeta m;  if (item.Get(id, m))  { InitRecord(r, type, id, DR_Resolved); FillItem(r, m);  sink(r); } }
+        else if (type == LINK_SKIN)  { SkinMeta m;  if (skin.Get(id, m))  { InitRecord(r, type, id, DR_Resolved); FillSkin(r, m);  sink(r); } }
+        else if (type == LINK_SKILL) { SkillMeta m; if (skill.Get(id, m)) { InitRecord(r, type, id, DR_Resolved); FillSkill(r, m); sink(r); } }
     }
     void EmitFailed(uint8_t type, uint32_t id) {
         DecoderRecord r; InitRecord(r, type, id, DR_Failed); sink(r);
@@ -63,33 +75,33 @@ void DecoderService::SetFailCooldownSec(int s) {
 }
 
 DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::string& chatCode, DecoderRecord& out) {
+    if (!m_p) { InitRecord(out, type, id, DR_Failed); return DR_Failed; }
+
     // Offline types resolve synchronously from compiled-in data.
     if (type == LINK_BUILD || type == LINK_MAP)
         return ResolveOffline(type, chatCode, out) ? DR_Resolved : DR_Failed;
 
     if (type == LINK_ITEM) {
         ItemMeta m;
-        if (m_p->item.Get(id, m)) { InitRecord(out,type,id,DR_Resolved); CopyField(out.name,m.name); CopyField(out.iconUrl,m.icon);
-            out.bound=m.bound; out.noSell=m.noSell?1:0; out.tradeable=m.tradeable?1:0; out.vendorValue=m.vendorValue; return DR_Resolved; }
-        InitRecord(out,type,id,DR_NotReady); return DR_NotReady;
+        if (m_p->item.Get(id, m)) { InitRecord(out, type, id, DR_Resolved); Impl::FillItem(out, m); return DR_Resolved; }
+        InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
     }
     if (type == LINK_SKIN) {
         SkinMeta m;
-        if (m_p->skin.Get(id, m)) { InitRecord(out,type,id,DR_Resolved); CopyField(out.name,m.name); CopyField(out.iconUrl,m.icon); return DR_Resolved; }
-        InitRecord(out,type,id,DR_NotReady); return DR_NotReady;
+        if (m_p->skin.Get(id, m)) { InitRecord(out, type, id, DR_Resolved); Impl::FillSkin(out, m); return DR_Resolved; }
+        InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
     }
     if (type == LINK_SKILL) {
         SkillMeta m;
-        if (m_p->skill.Get(id, m)) { InitRecord(out,type,id,DR_Resolved); CopyField(out.name,m.name); CopyField(out.iconUrl,m.icon); CopyField(out.description,m.description);
-            uint8_t n=(uint8_t)(m.facts.size()<16?m.facts.size():16);
-            for (uint8_t i=0;i<n;++i){ CopyField(out.facts[i].icon,m.facts[i].icon); CopyField(out.facts[i].text,m.facts[i].text);} out.factCount=n; return DR_Resolved; }
-        InitRecord(out,type,id,DR_NotReady); return DR_NotReady;
+        if (m_p->skill.Get(id, m)) { InitRecord(out, type, id, DR_Resolved); Impl::FillSkill(out, m); return DR_Resolved; }
+        InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
     }
     InitRecord(out, type, id, DR_Failed);
     return DR_Failed;   // unsupported type
 }
 
 DecoderStatus DecoderService::QueryPrice(uint32_t itemId, DecoderPrice& out) {
+    if (!m_p) return DR_Failed;
     return m_p->price.Get(itemId, out) ? DR_Resolved : DR_NotReady;
 }
 

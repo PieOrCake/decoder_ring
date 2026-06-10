@@ -35,7 +35,7 @@ static void test_offline_build_label() {
     std::string link = EncodeBuild(b);
 
     DecoderRecord r{};
-    bool ok = Decoder::ResolveOffline(LINK_BUILD, link, r);
+    bool ok = Decoder::ResolveOffline(LINK_BUILD, 0, link, r);
     CHECK(ok);
     CHECK(r.status == DR_Resolved);
     CHECK(std::strcmp(r.name, "Mirage Build") == 0);
@@ -43,18 +43,19 @@ static void test_offline_build_label() {
     // Core profession fallback when no elite spec in the 3rd slot.
     DecodedBuildLink c{}; c.profession = PROF_MESMER;
     DecoderRecord r2{};
-    CHECK(Decoder::ResolveOffline(LINK_BUILD, EncodeBuild(c), r2));
+    CHECK(Decoder::ResolveOffline(LINK_BUILD, 0, EncodeBuild(c), r2));
     CHECK(std::strcmp(r2.name, "Mesmer Build") == 0);
 }
 
 static void test_offline_waypoint() {
     using namespace PieUI::ChatLinks;
     // Find any id in [1,200] that resolves from the compiled-in waypoint table.
+    // Pass an EMPTY chat code to prove a waypoint resolves from its id alone.
     DecoderRecord r{};
     bool any = false;
     for (uint32_t id = 1; id <= 200 && !any; ++id) {
         DecoderRecord t{};
-        if (Decoder::ResolveOffline(LINK_MAP, EncodeMap(id), t) && t.status == DR_Resolved) {
+        if (Decoder::ResolveOffline(LINK_MAP, id, std::string(), t) && t.status == DR_Resolved) {
             any = true; r = t;
         }
     }

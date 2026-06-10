@@ -96,7 +96,11 @@ struct DecoderRingApi {
     //   DR_Resolved -> *out filled from warm cache.
     //   DR_NotReady -> background fetch kicked (or already in flight); watch the event.
     //   DR_Failed   -> last fetch failed, still in cooldown (retryable later).
-    DecoderStatus (*Resolve)(uint8_t linkType, uint32_t id, DecoderRecord* out);
+    // chatCode: the full "[&...]" chat link. REQUIRED for build links (LINK_BUILD,
+    // which carry no integer id); may be NULL for item/skin/skill/waypoint where
+    // (linkType,id) fully identifies the target. The returned record (even when
+    // NotReady) carries the (linkType,id) correlation key to match the event by.
+    DecoderStatus (*Resolve)(uint8_t linkType, uint32_t id, const char* chatCode, DecoderRecord* out);
     // Volatile price. DR_Resolved with *out filled, or DR_NotReady (fetch kicked).
     DecoderStatus (*QueryPrice)(uint32_t itemId, DecoderPrice* out);
 };

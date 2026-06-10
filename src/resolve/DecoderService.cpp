@@ -79,7 +79,7 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
 
     // Offline types resolve synchronously from compiled-in data.
     if (type == LINK_BUILD || type == LINK_MAP)
-        return ResolveOffline(type, chatCode, out) ? DR_Resolved : DR_Failed;
+        return ResolveOffline(type, id, chatCode, out) ? DR_Resolved : DR_Failed;
 
     if (type == LINK_ITEM) {
         ItemMeta m;

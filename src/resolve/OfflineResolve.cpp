@@ -20,7 +20,7 @@ std::string BuildLabel(const DecodedBuildLink& b) {
 }
 }
 
-bool ResolveOffline(uint8_t linkType, const std::string& chatCode, DecoderRecord& out) {
+bool ResolveOffline(uint8_t linkType, uint32_t id, const std::string& chatCode, DecoderRecord& out) {
     if (linkType == LINK_BUILD) {
         DecodedBuildLink b{};
         if (!DecodeBuild(chatCode, b)) return false;
@@ -29,9 +29,11 @@ bool ResolveOffline(uint8_t linkType, const std::string& chatCode, DecoderRecord
         return true;
     }
     if (linkType == LINK_MAP) {
-        auto segs = SegmentLine(chatCode);
-        uint32_t poiId = 0;
-        for (auto& s : segs) if (s.kind == SegmentKind::Link && s.linkType == LINK_MAP) { poiId = s.primaryId; break; }
+        uint32_t poiId = id;   // the POI id is sufficient on its own
+        if (poiId == 0) {      // fall back to extracting it from the chat code
+            auto segs = SegmentLine(chatCode);
+            for (auto& s : segs) if (s.kind == SegmentKind::Link && s.linkType == LINK_MAP) { poiId = s.primaryId; break; }
+        }
         if (poiId == 0) return false;
         std::string name, mapName; const char* typeLabel = nullptr;
         if (!WaypointNames::Get(poiId, name, mapName, &typeLabel)) return false;

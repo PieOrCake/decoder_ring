@@ -141,6 +141,6 @@ private:
     std::atomic<bool> m_Dirty{false};
     std::thread m_Worker;
     std::chrono::steady_clock::time_point m_LastFlush{std::chrono::steady_clock::now()};
-    int m_FailCooldownSec = 60;
+    std::atomic<int> m_FailCooldownSec{60};   // atomic: SetFailCooldownSec may run off the worker thread
 };
 }

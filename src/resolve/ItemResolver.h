@@ -10,6 +10,7 @@ struct ItemMeta {
     uint8_t bound = DB_None;
     bool noSell = false, tradeable = false;
     int32_t vendorValue = 0;
+    uint8_t rarity = DR_RarityUnknown;   // from /v2 "rarity"; Unknown when absent (old cache)
 };
 struct ItemTraits {
     using Meta = ItemMeta;

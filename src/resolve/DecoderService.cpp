@@ -27,6 +27,7 @@ struct DecoderService::Impl {
     static void FillItem(DecoderRecord& r, const ItemMeta& m) {
         CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);
         r.bound = m.bound; r.noSell = m.noSell ? 1 : 0; r.tradeable = m.tradeable ? 1 : 0; r.vendorValue = m.vendorValue;
+        r.rarity = m.rarity;
     }
     static void FillSkin(DecoderRecord& r, const SkinMeta& m) {
         CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);

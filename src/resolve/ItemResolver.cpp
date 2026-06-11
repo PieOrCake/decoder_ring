@@ -16,6 +16,17 @@ uint8_t BoundOf(const nlohmann::json& flags) {
     if (accUse)  return DB_AccountOnUse;
     return DB_None;
 }
+uint8_t RarityOf(const std::string& s) {
+    if (s=="Junk")       return DR_Junk;
+    if (s=="Basic")      return DR_Basic;
+    if (s=="Fine")       return DR_Fine;
+    if (s=="Masterwork") return DR_Masterwork;
+    if (s=="Rare")       return DR_Rare;
+    if (s=="Exotic")     return DR_Exotic;
+    if (s=="Ascended")   return DR_Ascended;
+    if (s=="Legendary")  return DR_Legendary;
+    return DR_RarityUnknown;   // missing or unrecognised tier
+}
 }
 
 bool ItemTraits::Parse(const std::vector<char>& body, Meta& out) {
@@ -24,6 +35,7 @@ bool ItemTraits::Parse(const std::vector<char>& body, Meta& out) {
         if (!j.is_object() || !j.contains("name")) return false;
         out.name = S(j, "name");
         out.icon = S(j, "icon");
+        out.rarity = RarityOf(S(j, "rarity"));   // same /v2 body already parsed for name/icon
         out.vendorValue = (j.contains("vendor_value") && j["vendor_value"].is_number_integer())
                           ? j["vendor_value"].get<int>() : 0;
         if (j.contains("flags") && j["flags"].is_array()) {
@@ -38,7 +50,7 @@ bool ItemTraits::Parse(const std::vector<char>& body, Meta& out) {
 
 nlohmann::json ItemTraits::ToJson(const Meta& m) {
     return nlohmann::json{ {"n",m.name},{"ic",m.icon},{"b",m.bound},
-                           {"ns",m.noSell},{"tr",m.tradeable},{"vv",m.vendorValue} };
+                           {"ns",m.noSell},{"tr",m.tradeable},{"vv",m.vendorValue},{"rr",m.rarity} };
 }
 void ItemTraits::FromJson(const nlohmann::json& j, Meta& m) {
     if (!j.is_object()) return;
@@ -48,5 +60,7 @@ void ItemTraits::FromJson(const nlohmann::json& j, Meta& m) {
     if (j.contains("ns")) m.noSell = j["ns"].get<bool>();
     if (j.contains("tr")) m.tradeable = j["tr"].get<bool>();
     if (j.contains("vv")) m.vendorValue = j["vv"].get<int>();
+    // Pre-v2 cache files lack "rr"; the key guard leaves the DR_RarityUnknown default.
+    if (j.contains("rr")) m.rarity = j["rr"].get<uint8_t>();
 }
 }

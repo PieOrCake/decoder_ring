@@ -153,11 +153,32 @@ immediate call context — the struct layout may change between service versions
 
 | Link type | byte | Extra fields |
 |---|---|---|
-| Item | `0x02` | `bound` (DecoderBound), `noSell`, `tradeable`, `vendorValue` (copper) |
+| Item | `0x02` | `bound` (DecoderBound), `noSell`, `tradeable`, `vendorValue` (copper), `rarity` (DecoderRarity) |
 | Skill | `0x06` | `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) |
 | Waypoint/POI | `0x04` | `mapName[96]`, `poiType` (DecoderPoiKind) |
 | Build/AE2 | `0x0D` | Spec label in `name[]`; no additional fields |
 | Skin | `0x0A` | `name[]` and `iconUrl[]` only |
+
+**Item `rarity` (`uint8_t`, holds a `DecoderRarity` value)** — added in schema version 2. Distilled
+from the same `/v2/items/:id` response as `name`/`iconUrl` (no extra fetch). Values:
+
+| Value | `DecoderRarity` | GW2 tier |
+|---|---|---|
+| 0 | `DR_RarityUnknown` | not yet resolved, or read from a pre-v2 disk cache that lacked the field — treat as "unknown", never as a tier |
+| 1 | `DR_Junk` | Junk |
+| 2 | `DR_Basic` | Basic |
+| 3 | `DR_Fine` | Fine |
+| 4 | `DR_Masterwork` | Masterwork |
+| 5 | `DR_Rare` | Rare |
+| 6 | `DR_Exotic` | Exotic |
+| 7 | `DR_Ascended` | Ascended |
+| 8 | `DR_Legendary` | Legendary |
+
+> **Schema version 2.** `DECODER_RING_API_VERSION` is now `2u`. The only change from v1 is the
+> addition of `rarity` (it reuses a former padding byte, so the struct size is unchanged). Always
+> compile against the header version you check at runtime; a v1 consumer reading a v2 record simply
+> ignores the field. Old item disk-cache files (written by v1) are read without error — their
+> entries report `DR_RarityUnknown`.
 
 ---
 

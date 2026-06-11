@@ -121,7 +121,7 @@ static std::vector<char> Bytes(const char* s) { return std::vector<char>(s, s + 
 
 static void test_item_parse() {
     const char* json = R"({"name":"Berserker's Sword","icon":"https://x/sword.png",
-        "vendor_value":33,"flags":["AccountBound","NoSell"],"type":"Weapon",
+        "vendor_value":33,"rarity":"Exotic","flags":["AccountBound","NoSell"],"type":"Weapon",
         "details":{"type":"Sword"}})";
     Decoder::ItemMeta m;
     CHECK(Decoder::ItemTraits::Parse(Bytes(json), m));
@@ -131,6 +131,71 @@ static void test_item_parse() {
     CHECK(m.noSell == true);
     CHECK(m.bound == DB_AccountOnAcquire);
     CHECK(m.tradeable == false);   // account-bound-on-acquire => not tradeable
+    CHECK(m.rarity == DR_Exotic);  // rarity distilled from the same /v2 body
+}
+
+// Rarity: every GW2 tier maps; an unknown/absent rarity stays DR_RarityUnknown.
+static void test_item_rarity_values() {
+    struct { const char* s; uint8_t want; } cases[] = {
+        {"Junk",DR_Junk},{"Basic",DR_Basic},{"Fine",DR_Fine},{"Masterwork",DR_Masterwork},
+        {"Rare",DR_Rare},{"Exotic",DR_Exotic},{"Ascended",DR_Ascended},{"Legendary",DR_Legendary},
+    };
+    for (auto& c : cases) {
+        std::string json = std::string("{\"name\":\"x\",\"rarity\":\"") + c.s + "\"}";
+        Decoder::ItemMeta m;
+        CHECK(Decoder::ItemTraits::Parse(Bytes(json.c_str()), m));
+        CHECK(m.rarity == c.want);
+    }
+    // No rarity field at all -> Unknown, still parses fine.
+    Decoder::ItemMeta none;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(R"({"name":"x"})"), none));
+    CHECK(none.rarity == DR_RarityUnknown);
+    // Unrecognised tier string -> Unknown (never a bogus tier).
+    Decoder::ItemMeta weird;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(R"({"name":"x","rarity":"Mythic"})"), weird));
+    CHECK(weird.rarity == DR_RarityUnknown);
+}
+
+// Disk-cache compatibility: rarity round-trips, and a PRE-v2 cache entry lacking
+// the "rr" key must read back as DR_RarityUnknown with no error (no poison/discard).
+static void test_item_rarity_cache_compat() {
+    // Round-trip through the disk JSON keeps the tier.
+    Decoder::ItemMeta in; in.name = "Sword"; in.rarity = DR_Ascended;
+    nlohmann::json j = Decoder::ItemTraits::ToJson(in);
+    Decoder::ItemMeta out; Decoder::ItemTraits::FromJson(j, out);
+    CHECK(out.rarity == DR_Ascended);
+
+    // Old cache file shape (no "rr") -> defaults to Unknown, other fields still read.
+    nlohmann::json old = { {"n","Old Sword"},{"ic","i"},{"b",DB_None},
+                           {"ns",false},{"tr",true},{"vv",10} };
+    Decoder::ItemMeta legacy; Decoder::ItemTraits::FromJson(old, legacy);
+    CHECK(legacy.name == "Old Sword");
+    CHECK(legacy.rarity == DR_RarityUnknown);   // missing field -> Unknown, no crash
+}
+
+// Service level: a stubbed /v2 item carrying a rarity resolves to a record that
+// carries the matching DecoderRarity value end-to-end.
+static void test_service_item_rarity() {
+    using namespace PieUI::ChatLinks;
+    std::vector<DecoderRecord> events;
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string&, std::vector<char>& out){
+            const char* j = R"({"name":"Twilight","icon":"i","rarity":"Legendary","vendor_value":100})";
+            out.assign(j, j + std::strlen(j)); return true;
+        },
+        [&](const DecoderRecord& r){ events.push_back(r); });
+
+    DecoderRecord r;
+    CHECK(svc.Resolve(LINK_ITEM, 30704, r) == DR_NotReady);   // cold -> fetch kicked
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1);
+    CHECK(events[0].status == DR_Resolved);
+    CHECK(events[0].rarity == DR_Legendary);                  // event record carries rarity
+    // Warm re-query also carries it.
+    CHECK(svc.Resolve(LINK_ITEM, 30704, r) == DR_Resolved);
+    CHECK(r.rarity == DR_Legendary);
+    svc.Shutdown();
 }
 
 static void test_skin_parse() {
@@ -355,6 +420,9 @@ int main() {
     test_offline_waypoint();
     test_async_state_machine();
     test_item_parse();
+    test_item_rarity_values();
+    test_item_rarity_cache_compat();
+    test_service_item_rarity();
     test_skin_parse();
     test_skill_parse();
     test_service_end_to_end();

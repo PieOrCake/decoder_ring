@@ -15,8 +15,9 @@ resolves build/AE2 labels and waypoint/POI names offline from compiled-in data. 
 and passes icon URLs — not textures — across the boundary; each consumer downloads and uploads its
 own texture.
 
-**Resolved link types:** item, skin, skill (via `/v2` API) · build/AE2 spec label · waypoint/POI
-name · volatile trading-post price (in-memory, ~5-min TTL, separate from the durable record).
+**Resolved link types:** item (name, icon, and rarity tier — Junk through Legendary), skin, skill
+(via `/v2` API) · build/AE2 spec label · waypoint/POI name · volatile trading-post price (in-memory,
+~5-min TTL, separate from the durable record).
 
 **API:** Two coupled halves, both keyed by `(linkType, id)`. Call `api->Resolve()` for an
 immediate warm result; subscribe `EV_DECODER_RING_RESOLVED` for the async completion when the

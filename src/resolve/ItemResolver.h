@@ -20,6 +20,8 @@ struct ItemTraits {
     static bool Parse(const std::vector<char>& body, Meta& out);
     static std::string FallbackUrl(uint32_t) { return ""; }                  // no fallback source
     static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
+    static std::string EnrichUrl(uint32_t, const Meta&) { return ""; }       // no enrichment
+    static bool ParseEnrich(const std::vector<char>&, Meta&) { return false; }
     static const char* FileName() { return "iteminfo_v2.json"; }   // v2: + description/lines; old shape refetched
     static nlohmann::json ToJson(const Meta& m);
     static void FromJson(const nlohmann::json& j, Meta& m);

@@ -64,6 +64,25 @@ std::string StripWikiFact(std::string s) {
     s = regex_replace(s, regex("\\s+$"), "");
     return s;
 }
+
+// True if the meta already carries a defiance fact (wiki-fallback skills do).
+bool HasDefianceFact(const SkillMeta& m) {
+    for (const auto& f : m.facts) if (f.text.rfind("Defiance Break", 0) == 0) return true;
+    return false;
+}
+// Pull the integer right after "Defiance Break]]:" out of a raw wiki facts blob
+// (0 if absent). Reads only the digits immediately following the key, so a later
+// stray number in the wiki's markup (e.g. a "sic" note) can't fool it.
+int ParseDefiance(const std::string& blob) {
+    const std::string key = "Defiance Break]]:";
+    size_t p = blob.find(key);
+    if (p == std::string::npos) return 0;
+    p += key.size();
+    while (p < blob.size() && (blob[p]==' '||blob[p]=='\t')) ++p;
+    int v=0; bool any=false;
+    while (p < blob.size() && blob[p]>='0' && blob[p]<='9') { v=v*10+(blob[p]-'0'); ++p; any=true; }
+    return any ? v : 0;
+}
 }
 
 bool SkillTraits::Parse(const std::vector<char>& body, Meta& out) {
@@ -159,6 +178,41 @@ bool SkillTraits::ParseFallback(const std::vector<char>& body, Meta& out) {
                 }
             }
         return !out.name.empty();
+    } catch (...) { return false; }
+}
+
+std::string SkillTraits::EnrichUrl(uint32_t id, const Meta& m) {
+    // /v2/skills has no breakbar field; the wiki does. Skip when there's no name to
+    // match against, or when a defiance fact is already present (a wiki-fallback skill
+    // brought it in) — that avoids a redundant fetch and any chance of doubling.
+    if (id == 0 || m.name.empty() || HasDefianceFact(m)) return "";
+    std::string q = "[[Has game id::" + std::to_string(id) + "]][[Has context::Skill]]|?Has skill facts";
+    return "https://wiki.guildwars2.com/api.php?action=ask&query=" + UrlEncode(q) + "&format=json";
+}
+
+bool SkillTraits::ParseEnrich(const std::vector<char>& body, Meta& out) {
+    if (HasDefianceFact(out)) return false;   // never double an existing defiance line
+    try {
+        auto j = nlohmann::json::parse(body.begin(), body.end());
+        if (!j.contains("query") || !j["query"].contains("results")) return false;
+        const auto& results = j["query"]["results"];
+        if (!results.is_object()) return false;
+        for (auto it = results.begin(); it != results.end(); ++it) {
+            // Match the API skill by page title, stripping any #PvP/#WvW mode variant.
+            std::string page = it.key();
+            std::string base = page.substr(0, page.find('#'));
+            if (base != out.name) continue;
+            const auto& po = it.value();
+            if (!po.contains("printouts")) continue;
+            const auto& pr = po["printouts"];
+            if (!pr.contains("Has skill facts") || !pr["Has skill facts"].is_array()) continue;
+            std::string blob;
+            for (const auto& s : pr["Has skill facts"])
+                if (s.is_string()) { if (!blob.empty()) blob += '\n'; blob += s.get<std::string>(); }
+            int v = ParseDefiance(blob);
+            if (v > 0) { SkillFactM sf; sf.text = "Defiance Break: " + std::to_string(v); out.facts.push_back(std::move(sf)); return true; }
+        }
+        return false;
     } catch (...) { return false; }
 }
 }

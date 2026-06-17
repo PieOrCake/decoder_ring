@@ -75,6 +75,8 @@ struct FakeTraits {
     }
     static std::string FallbackUrl(uint32_t) { return ""; }                  // no fallback source
     static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
+    static std::string EnrichUrl(uint32_t, const Meta&) { return ""; }       // no enrichment
+    static bool ParseEnrich(const std::vector<char>&, Meta&) { return false; }
     // No disk in this test.
     static const char* FileName() { return ""; }
     static nlohmann::json ToJson(const Meta& m) { return m.value; }
@@ -305,6 +307,23 @@ static void test_service_item_tooltip() {
     svc.Shutdown();
 }
 
+// Subtype line wording: aquatic armour reads naturally, "Default" (unidentified /
+// generic) is dropped, real slots pass through verbatim.
+static Decoder::ItemMeta ParseItemType(const std::string& detailsType) {
+    std::string j = "{\"name\":\"x\",\"details\":{\"type\":\"" + detailsType + "\"}}";
+    Decoder::ItemMeta m; Decoder::ItemTraits::Parse(Bytes(j.c_str()), m); return m;
+}
+static void test_item_subtype_wording() {
+    CHECK(LinesHave(ParseItemType("HelmAquatic"), "Aquatic Helm"));
+    CHECK(!LinesContain(ParseItemType("HelmAquatic"), "HelmAquatic"));
+    CHECK(LinesHave(ParseItemType("GauntletsAquatic"), "Aquatic Gauntlets"));  // generic *Aquatic rule
+    CHECK(!LinesContain(ParseItemType("Default"), "Default"));                 // omitted, not a real slot
+    CHECK(LinesHave(ParseItemType("Coat"), "Coat"));                           // verbatim
+    CHECK(LinesHave(ParseItemType("Rifle"), "Rifle"));                         // verbatim
+    CHECK(LinesHave(ParseItemType("Trident"), "Trident"));                     // aquatic *weapon* untouched
+    CHECK(LinesHave(ParseItemType("Speargun"), "Speargun"));
+}
+
 static void test_skin_parse() {
     const char* json = R"({"name":"Mistforged Hero's","icon":"https://x/skin.png"})";
     Decoder::SkinMeta m;
@@ -408,6 +427,71 @@ static void test_async_skill_fallback_path() {
     CHECK(done[0].second == true);                     // primary failed -> fallback resolved
     CHECK(res.Get(63475, m) == GS::Warm);
     CHECK(m.name == "Slam");                           // named via the wiki, not the API
+    res.Shutdown();
+}
+
+// --- Defiance/breakbar enrichment for API-resolved skills --------------------
+// Real wiki `Has skill facts` blobs. 6154 Overcharged Shot carries a breakbar the
+// /v2 API lacks (note the wiki's own "sic" annotation embeds a stray "332" after
+// the real value 232 — ParseDefiance must read 232). 5492 Fire Attunement has none.
+static const char* kDefiance6154 = R"DEF({"query":{"results":{"Overcharged Shot":{"printouts":{"Has skill facts":[":<div class=\"gamemode pve\"><span class=\"inline-icon effect\">[[File:Damage.png|20pxpx|link=Damage|]]</span>&nbsp;[[Damage|Damage]]: 422 <span style=\"color:gray\">(1.0)</span><sup><abbr title=\"(weapon strength) * 1.0 * Power / (target's Armor)\">?</abbr></sup></div>\n:<div class=\"gamemode pvp wvw\"><span class=\"inline-icon effect\">[[File:Damage.png|20pxpx|link=Damage|]]</span>&nbsp;[[Damage|Damage]]: 4 <span style=\"color:gray\">(0.01)</span><sup><abbr title=\"(weapon strength) * 0.01 * Power / (target's Armor)\">?</abbr></sup></div>\n:<span class=\"inline-icon effect\">[[File:Evade.png|20px|link=Defiance Break|]]</span>&nbsp;<span class=\"hiddenlinks\" style=\"color: teal;\">[[Defiance Break|Defiance Break]]: 232</span><span style=\"margin: 0em 0.1em; font-size: 85%; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;\">&#0091;''[[wikipedia:sic|<span style=\"cursor: help; border-bottom: 1px dotted silver;\" title=\"332\">sic</span>]]''&#0093;</span>[[Category:Text errors]][[Category:Skills with incorrect defiance break tooltips]]"]},"fulltext":"Overcharged Shot","fullurl":"//wiki.guildwars2.com/wiki/Overcharged_Shot","namespace":0,"exists":"1","displaytitle":""},"Overcharged Shot#WvW,PvP":{"printouts":{"Has skill facts":[":<span class=\"inline-icon effect\">[[File:Evade.png|20px|link=Defiance Break|]]</span>&nbsp;<span class=\"hiddenlinks\" style=\"color: teal;\">[[Defiance Break|Defiance Break]]: 232</span>"]},"fulltext":"Overcharged Shot#WvW,PvP","fullurl":"//wiki.guildwars2.com/wiki/Overcharged_Shot#WvW,PvP","namespace":0,"exists":"1","displaytitle":""}},"version":2}})DEF";
+
+static const char* kDefiance5492 = R"DEF({"query":{"results":{"Fire Attunement":{"printouts":{"Has skill facts":[]},"fulltext":"Fire Attunement","fullurl":"//wiki.guildwars2.com/wiki/Fire_Attunement","namespace":0,"exists":"1","displaytitle":""}},"version":2}})DEF";
+
+// API-resolved skill with a breakbar gains the "Defiance Break: N" line the API lacks.
+static void test_skill_enrich_defiance() {
+    CHECK(std::strcmp(Decoder::SkillTraits::FileName(), "skillinfo_v2.json") == 0);  // old cache re-resolved
+    Decoder::SkillMeta m; m.name = "Overcharged Shot";
+    CHECK(Decoder::SkillTraits::ParseEnrich(Bytes(kDefiance6154), m));
+    CHECK(FactsHave(m, "Defiance Break: 232"));   // the stray "332" sic-note is ignored
+}
+
+// A skill with no breakbar gets no defiance fact (and never a "Defiance Break: 0").
+static void test_skill_enrich_none() {
+    Decoder::SkillMeta m; m.name = "Fire Attunement";
+    CHECK(!Decoder::SkillTraits::ParseEnrich(Bytes(kDefiance5492), m));
+    for (auto& f : m.facts) CHECK(f.text.rfind("Defiance Break", 0) != 0);
+}
+
+// EnrichUrl skips when a defiance fact already exists (wiki-fallback skills already
+// carry it) — no redundant fetch — and ParseEnrich never doubles the line.
+static void test_skill_enrich_guard() {
+    Decoder::SkillMeta plain; plain.name = "Overcharged Shot";
+    std::string u = Decoder::SkillTraits::EnrichUrl(6154, plain);
+    CHECK(!u.empty());
+    CHECK(u.find("6154") != std::string::npos);
+    CHECK(u.find("Skill") != std::string::npos);
+
+    Decoder::SkillMeta already; already.name = "Overcharged Shot";
+    Decoder::SkillFactM sf; sf.text = "Defiance Break: 232"; already.facts.push_back(sf);
+    CHECK(Decoder::SkillTraits::EnrichUrl(6154, already).empty());            // already enriched -> skip
+    CHECK(!Decoder::SkillTraits::ParseEnrich(Bytes(kDefiance6154), already)); // and won't double
+    int n = 0; for (auto& f : already.facts) if (f.text.rfind("Defiance Break", 0) == 0) ++n;
+    CHECK(n == 1);
+}
+
+// AsyncResolver two-phase: the API resolve emits first (name, no defiance), then the
+// enrichment lands a SECOND completion and the warm record carries the breakbar.
+static void test_async_skill_enrich_path() {
+    using R = Decoder::AsyncResolver<Decoder::SkillTraits>;
+    R res;
+    res.Initialize("", [&](const std::string& url, std::vector<char>& out){
+        if (url.find("api.guildwars2.com") != std::string::npos) {
+            const char* j = R"({"name":"Overcharged Shot","description":"d","facts":[{"type":"Damage","text":"Damage","hit_count":1}]})";
+            out.assign(j, j+std::strlen(j)); return true;          // API: resolves, no breakbar
+        }
+        out.assign(kDefiance6154, kDefiance6154+std::strlen(kDefiance6154)); return true;  // wiki enrich
+    });
+    using GS = Decoder::GetState;
+    Decoder::SkillMeta m;
+    CHECK(res.Get(6154, m) == GS::Pending);
+    std::vector<std::pair<uint32_t,bool>> done;
+    for (int i=0;i<400 && done.size()<2;++i){ res.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(done.size() == 2);                                        // API resolve + enrichment re-emit
+    CHECK(done[0].second == true && done[1].second == true);
+    CHECK(res.Get(6154, m) == GS::Warm);
+    CHECK(m.name == "Overcharged Shot");
+    CHECK(FactsHave(m, "Defiance Break: 232"));                     // breakbar in the warm record
     res.Shutdown();
 }
 
@@ -620,6 +704,7 @@ int main() {
     test_item_nosell_tradeable();
     test_item_cache_roundtrip_v3();
     test_service_item_tooltip();
+    test_item_subtype_wording();
     test_skin_parse();
     test_skill_parse();
     test_skill_fallback_collision();
@@ -627,6 +712,10 @@ int main() {
     test_skill_fallback_markup();
     test_skill_fallback_empty();
     test_async_skill_fallback_path();
+    test_skill_enrich_defiance();
+    test_skill_enrich_none();
+    test_skill_enrich_guard();
+    test_async_skill_enrich_path();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

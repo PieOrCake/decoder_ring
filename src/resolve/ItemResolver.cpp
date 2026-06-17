@@ -19,6 +19,17 @@ std::string AttrName(const std::string& a) {
     if (a=="AgonyResistance")   return "Agony Resistance";
     return a;   // Power, Precision, Toughness, Vitality, or any future key verbatim
 }
+// Tidy the raw /v2 details.type for display: drop the generic "Default" (unidentified
+// gear / no real slot), and turn "*Aquatic" armour enums into "Aquatic *" (e.g.
+// "HelmAquatic" -> "Aquatic Helm"). Everything else passes through verbatim — real
+// slots ("Coat", "Rifle") and aquatic *weapons* ("Trident", "Speargun") are unchanged.
+std::string PrettySubtype(const std::string& t) {
+    if (t.empty() || t == "Default") return "";
+    static const std::string aq = "Aquatic";
+    if (t.size() > aq.size() && t.compare(t.size() - aq.size(), aq.size(), aq) == 0)
+        return "Aquatic " + t.substr(0, t.size() - aq.size());
+    return t;
+}
 // Item flavour text -> plain text: <br> to newline, drop <c=…>/</c> and other tags.
 std::string CleanItemText(std::string s) {
     using std::regex; using std::regex_replace;
@@ -90,7 +101,7 @@ bool ItemTraits::Parse(const std::vector<char>& body, Meta& out) {
             }
             if (d.contains("bonuses") && d["bonuses"].is_array())          // rune set bonuses, verbatim
                 for (auto& b : d["bonuses"]) if (b.is_string()) out.lines.push_back(b.get<std::string>());
-            std::string sub = S(d, "type");                               // e.g. "Coat", "Trident"
+            std::string sub = PrettySubtype(S(d, "type"));               // e.g. "Coat", "Aquatic Helm"; "" drops it
             if (!sub.empty()) out.lines.push_back(sub);
             std::string wc = S(d, "weight_class");                        // armour only
             if (!wc.empty()) out.lines.push_back(wc + " Armor");

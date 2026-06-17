@@ -31,6 +31,8 @@ enum class GetState { Warm, Pending, Failed };
 //   static bool Parse(const std::vector<char>& body, Meta&);
 //   static std::string FallbackUrl(uint32_t id); // "" = no fallback source
 //   static bool ParseFallback(const std::vector<char>&, Meta&);
+//   static std::string EnrichUrl(uint32_t id, const Meta&); // "" = no enrichment
+//   static bool ParseEnrich(const std::vector<char>&, Meta&); // mutate; true if changed
 //   static const char* FileName();               // "" disables disk
 //   static nlohmann::json ToJson(const Meta&);
 //   static void FromJson(const nlohmann::json&, Meta&);
@@ -146,11 +148,33 @@ private:
                     ok = m_Fetch(furl, fbody) && Traits::ParseFallback(fbody, meta);
                 }
             }
-            std::lock_guard<std::mutex> lk(m_Mtx);
-            m_Pending.erase(id);
-            if (ok) { m_Items[id] = std::move(meta); m_Fail.erase(id); m_Dirty = true; }   // never persist empties
-            else    { m_Fail[id] = std::chrono::steady_clock::now(); }
-            m_Completed.emplace_back(id, ok);
+            // Decide on enrichment BEFORE we move meta (EnrichUrl reads it).
+            std::string eurl = (ok && m_Fetch) ? Traits::EnrichUrl(id, meta) : std::string();
+            {
+                std::lock_guard<std::mutex> lk(m_Mtx);
+                m_Pending.erase(id);
+                if (ok) {                                           // never persist empties
+                    m_Fail.erase(id); m_Dirty = true;
+                    if (eurl.empty()) m_Items[id] = std::move(meta);
+                    else              m_Items[id] = meta;           // keep a copy for the enrich phase
+                } else {
+                    m_Fail[id] = std::chrono::steady_clock::now();
+                }
+                m_Completed.emplace_back(id, ok);
+            }
+            // Optional secondary enrichment (only SkillTraits opts in). Runs AFTER the
+            // resolved completion is enqueued — so it never gates name/icon/desc — and
+            // OFF-lock, so the slow wiki call blocks nothing. On success, update the warm
+            // record and emit a SECOND completion so consumers re-render with the new fact.
+            if (!eurl.empty() && !m_Stop.load()) {
+                std::vector<char> ebody;
+                if (m_Fetch(eurl, ebody) && Traits::ParseEnrich(ebody, meta)) {
+                    std::lock_guard<std::mutex> lk(m_Mtx);
+                    m_Items[id] = std::move(meta);
+                    m_Dirty = true;
+                    m_Completed.emplace_back(id, true);
+                }
+            }
         }
     }
 

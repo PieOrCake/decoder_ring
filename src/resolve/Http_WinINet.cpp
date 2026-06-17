@@ -9,9 +9,10 @@ bool WinINetFetch(const std::string& url, std::vector<char>& out) {
     if (!hI) return false;
     // Bound every blocking phase so a hung socket FAILS within a few seconds instead
     // of stranding the request (no terminal event) and blocking Shutdown()'s worker
-    // join (game freeze on unload). 5s each is generous for a single small /v2 GET
-    // yet short enough that a stall surfaces as a normal retryable failure promptly.
-    DWORD timeoutMs = 5000;
+    // join (game freeze on unload). 8s each: the wiki skill-name fallback's SMW ask
+    // query is genuinely slow (often several seconds), so the bound must clear it
+    // while still surfacing a true stall as a normal retryable failure promptly.
+    DWORD timeoutMs = 8000;
     InternetSetOptionA(hI, INTERNET_OPTION_CONNECT_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
     InternetSetOptionA(hI, INTERNET_OPTION_SEND_TIMEOUT,    &timeoutMs, sizeof(timeoutMs));
     InternetSetOptionA(hI, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));

@@ -1,9 +1,31 @@
 #include "resolve/ItemResolver.h"
+#include <regex>
 
 namespace Decoder {
 namespace {
 std::string S(const nlohmann::json& j, const char* k) {
     return (j.contains(k) && j[k].is_string()) ? j[k].get<std::string>() : std::string();
+}
+int I(const nlohmann::json& j, const char* k) {
+    return (j.contains(k) && j[k].is_number_integer()) ? j[k].get<int>() : 0;
+}
+// GW2 /v2 attribute keys -> the names shown in-game (most pass through unchanged).
+std::string AttrName(const std::string& a) {
+    if (a=="CritDamage")        return "Ferocity";
+    if (a=="ConditionDamage")   return "Condition Damage";
+    if (a=="ConditionDuration") return "Expertise";
+    if (a=="BoonDuration")      return "Concentration";
+    if (a=="Healing")           return "Healing Power";
+    if (a=="AgonyResistance")   return "Agony Resistance";
+    return a;   // Power, Precision, Toughness, Vitality, or any future key verbatim
+}
+// Item flavour text -> plain text: <br> to newline, drop <c=…>/</c> and other tags.
+std::string CleanItemText(std::string s) {
+    using std::regex; using std::regex_replace;
+    s = regex_replace(s, regex("<br ?/?>"), "\n");
+    s = regex_replace(s, regex("<[^>]*>"), "");
+    s = regex_replace(s, regex("^\\s+|\\s+$"), "");
+    return s;
 }
 uint8_t BoundOf(const nlohmann::json& flags) {
     bool acc=false, soulAcq=false, accUse=false, soulUse=false;
@@ -44,13 +66,47 @@ bool ItemTraits::Parse(const std::vector<char>& body, Meta& out) {
         }
         // Tradeable iff not bound-on-acquire (bind-on-use stays tradeable; NoSell does NOT gate TP).
         out.tradeable = !(out.bound == DB_AccountOnAcquire || out.bound == DB_SoulOnAcquire);
+
+        // Full-tooltip surfacing (schema v3): flavour text + pre-formatted lines, all
+        // distilled from this same document. Ordered for a top-down tooltip read.
+        out.description = CleanItemText(S(j, "description"));
+        if (j.contains("details") && j["details"].is_object()) {
+            const auto& d = j["details"];
+            int defense = I(d, "defense");
+            if (defense > 0) out.lines.push_back("Defense: " + std::to_string(defense));
+            int maxp = I(d, "max_power");
+            if (maxp > 0) out.lines.push_back("Weapon Strength: " + std::to_string(I(d, "min_power")) + " - " + std::to_string(maxp));
+            if (d.contains("infix_upgrade") && d["infix_upgrade"].is_object()
+                && d["infix_upgrade"].contains("attributes") && d["infix_upgrade"]["attributes"].is_array())
+                for (auto& a : d["infix_upgrade"]["attributes"]) {
+                    if (!a.is_object()) continue;
+                    std::string an = S(a, "attribute");
+                    if (!an.empty()) out.lines.push_back("+" + std::to_string(I(a, "modifier")) + " " + AttrName(an));
+                }
+            if (d.contains("infusion_slots") && d["infusion_slots"].is_array() && !d["infusion_slots"].empty()) {
+                size_t n = d["infusion_slots"].size();
+                out.lines.push_back(n > 1 ? ("Unused Infusion Slot (x" + std::to_string(n) + ")")
+                                          : std::string("Unused Infusion Slot"));
+            }
+            if (d.contains("bonuses") && d["bonuses"].is_array())          // rune set bonuses, verbatim
+                for (auto& b : d["bonuses"]) if (b.is_string()) out.lines.push_back(b.get<std::string>());
+            std::string sub = S(d, "type");                               // e.g. "Coat", "Trident"
+            if (!sub.empty()) out.lines.push_back(sub);
+            std::string wc = S(d, "weight_class");                        // armour only
+            if (!wc.empty()) out.lines.push_back(wc + " Armor");
+        }
+        int level = I(j, "level");
+        if (level > 0) out.lines.push_back("Required Level: " + std::to_string(level));
         return true;
     } catch (...) { return false; }
 }
 
 nlohmann::json ItemTraits::ToJson(const Meta& m) {
+    nlohmann::json ln = nlohmann::json::array();
+    for (auto& l : m.lines) ln.push_back(l);
     return nlohmann::json{ {"n",m.name},{"ic",m.icon},{"b",m.bound},
-                           {"ns",m.noSell},{"tr",m.tradeable},{"vv",m.vendorValue},{"rr",m.rarity} };
+                           {"ns",m.noSell},{"tr",m.tradeable},{"vv",m.vendorValue},{"rr",m.rarity},
+                           {"d",m.description},{"ln",std::move(ln)} };
 }
 void ItemTraits::FromJson(const nlohmann::json& j, Meta& m) {
     if (!j.is_object()) return;
@@ -62,5 +118,8 @@ void ItemTraits::FromJson(const nlohmann::json& j, Meta& m) {
     if (j.contains("vv")) m.vendorValue = j["vv"].get<int>();
     // Pre-v2 cache files lack "rr"; the key guard leaves the DR_RarityUnknown default.
     if (j.contains("rr")) m.rarity = j["rr"].get<uint8_t>();
+    if (j.contains("d"))  m.description = j["d"].get<std::string>();
+    if (j.contains("ln") && j["ln"].is_array())
+        for (auto& l : j["ln"]) if (l.is_string()) m.lines.push_back(l.get<std::string>());
 }
 }

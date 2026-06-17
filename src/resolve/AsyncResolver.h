@@ -29,6 +29,8 @@ enum class GetState { Warm, Pending, Failed };
 //   using Meta;                                  // the cached value type
 //   static std::string Url(uint32_t id);
 //   static bool Parse(const std::vector<char>& body, Meta&);
+//   static std::string FallbackUrl(uint32_t id); // "" = no fallback source
+//   static bool ParseFallback(const std::vector<char>&, Meta&);
 //   static const char* FileName();               // "" disables disk
 //   static nlohmann::json ToJson(const Meta&);
 //   static void FromJson(const nlohmann::json&, Meta&);
@@ -134,6 +136,16 @@ private:
               id = m_Queue.back(); m_Queue.pop_back(); }
             std::vector<char> body; Meta meta;
             bool ok = m_Fetch && m_Fetch(Traits::Url(id), body) && Traits::Parse(body, meta);
+            if (!ok && m_Fetch) {
+                // Primary source missed; try the Traits' optional fallback source (only
+                // SkillTraits opts in — others return "" and are skipped). One extra
+                // fetch+parse, attempted only on a miss, never on the warm/success path.
+                std::string furl = Traits::FallbackUrl(id);
+                if (!furl.empty()) {
+                    std::vector<char> fbody; meta = Meta{};
+                    ok = m_Fetch(furl, fbody) && Traits::ParseFallback(fbody, meta);
+                }
+            }
             std::lock_guard<std::mutex> lk(m_Mtx);
             m_Pending.erase(id);
             if (ok) { m_Items[id] = std::move(meta); m_Fail.erase(id); m_Dirty = true; }   // never persist empties

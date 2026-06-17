@@ -28,6 +28,12 @@ struct DecoderService::Impl {
         CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);
         r.bound = m.bound; r.noSell = m.noSell ? 1 : 0; r.tradeable = m.tradeable ? 1 : 0; r.vendorValue = m.vendorValue;
         r.rarity = m.rarity;
+        // v3: full tooltip — flavour text + pre-formatted lines as icon-less facts,
+        // bounded by CopyField and capped at the facts[] size (same as the skill path).
+        CopyField(r.description, m.description);
+        uint8_t n = (uint8_t)(m.lines.size() < 16 ? m.lines.size() : 16);
+        for (uint8_t i = 0; i < n; ++i) { r.facts[i].icon[0] = '\0'; CopyField(r.facts[i].text, m.lines[i]); }
+        r.factCount = n;
     }
     static void FillSkin(DecoderRecord& r, const SkinMeta& m) {
         CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);

@@ -1,5 +1,6 @@
 #include "resolve/SkillResolver.h"
 #include <cstdio>
+#include <regex>
 
 namespace Decoder {
 namespace {
@@ -27,6 +28,41 @@ std::string FormatFact(const nlohmann::json& f) {
         std::string dur=NumStr(f,"duration"); if (!dur.empty()&&dur!="0") s+=" ("+dur+"s)";
         return s; }
     return text;
+}
+
+// --- Wiki fallback helpers ----------------------------------------------------
+std::string UrlEncode(const std::string& s) {
+    static const char* hex = "0123456789ABCDEF"; std::string o;
+    for (unsigned char c : s) {
+        bool u = (c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~';
+        if (u) o += (char)c; else { o += '%'; o += hex[c>>4]; o += hex[c&0xF]; }
+    }
+    return o;
+}
+
+// Reduce wiki markup (links, bold/italic, file/category tags, entities) to plain text.
+std::string CleanWiki(std::string s) {
+    using std::regex; using std::regex_replace;
+    s = regex_replace(s, regex("\\[\\[:?(?:File|Category):[^\\]]*\\]\\]"), "");
+    s = regex_replace(s, regex("\\[\\[[^\\]|]*\\|([^\\]]*)\\]\\]"), "$1");   // [[target|label]] -> label
+    s = regex_replace(s, regex("\\[\\[([^\\]]*)\\]\\]"), "$1");              // [[label]] -> label
+    s = regex_replace(s, regex("'''|''"), "");
+    s = regex_replace(s, regex("&nbsp;|&#160;|&#32;"), " ");
+    s = regex_replace(s, regex("&amp;"), "&");
+    return s;
+}
+
+// One wiki skill-fact HTML line -> plain text. "" for the competitive (wvw/pvp) variant.
+std::string StripWikiFact(std::string s) {
+    if (s.find("wvw pvp") != std::string::npos) return "";   // keep the PvE variant only
+    using std::regex; using std::regex_replace;
+    s = regex_replace(s, regex("<sup[^>]*>.*?</sup>"), "");   // drop the "?" coefficient note
+    s = regex_replace(s, regex("<[^>]*>"), "");               // drop HTML tags
+    s = CleanWiki(s);
+    s = regex_replace(s, regex("^[\\s:]+"), "");              // strip the ":" bullet
+    s = regex_replace(s, regex("\\s+"), " ");
+    s = regex_replace(s, regex("\\s+$"), "");
+    return s;
 }
 }
 
@@ -64,5 +100,65 @@ void SkillTraits::FromJson(const nlohmann::json& j, Meta& m) {
             if (fj.contains("ic")) sf.icon = fj["ic"].get<std::string>();
             if (fj.contains("t"))  sf.text = fj["t"].get<std::string>();
             if (!sf.text.empty()) m.facts.push_back(std::move(sf)); }
+}
+
+std::string SkillTraits::FallbackUrl(uint32_t id) {
+    // [[Has context::Skill]] is ESSENTIAL — the wiki game-id space is shared across
+    // object types, so a skill id can collide with an item/skin of the same id
+    // (skill 63440 "Open Access" collides with item "Defender's Staff"). Without the
+    // constraint you resolve the skill link to the item.
+    std::string q = "[[Has game id::" + std::to_string(id) +
+        "]][[Has context::Skill]]|?Has canonical name|?Has game description|?Has skill facts";
+    return "https://wiki.guildwars2.com/api.php?action=ask&query=" + UrlEncode(q) + "&format=json";
+}
+
+bool SkillTraits::ParseFallback(const std::vector<char>& body, Meta& out) {
+    try {
+        auto j = nlohmann::json::parse(body.begin(), body.end());
+        if (!j.contains("query") || !j["query"].contains("results")) return false;
+        const auto& results = j["query"]["results"];
+        if (!results.is_object()) return false;   // an empty result set comes back as []
+        const nlohmann::json* best = nullptr; std::string bestName; bool bestHasFacts = false;
+        for (auto it = results.begin(); it != results.end(); ++it) {
+            const auto& po = it.value();
+            if (!po.contains("printouts")) continue;
+            const auto& pr = po["printouts"];
+            std::string cname;
+            if (pr.contains("Has canonical name") && pr["Has canonical name"].is_array()
+                && !pr["Has canonical name"].empty() && pr["Has canonical name"][0].is_string())
+                cname = pr["Has canonical name"][0].get<std::string>();
+            if (cname.empty()) continue;
+            bool hasFacts = pr.contains("Has skill facts") && pr["Has skill facts"].is_array()
+                            && !pr["Has skill facts"].empty();
+            // Prefer a facts-bearing page among variants (handles #WvW,PvP subpages).
+            if (!best || (hasFacts && !bestHasFacts)) { best = &po; bestName = cname; bestHasFacts = hasFacts; }
+        }
+        if (!best) return false;
+        out.name = bestName;   // canonical name -> matches the game ("Slam", not "Slam (turtle)")
+        const auto& pr = (*best)["printouts"];
+        if (pr.contains("Has game description") && pr["Has game description"].is_array()
+            && !pr["Has game description"].empty() && pr["Has game description"][0].is_string()) {
+            std::string d = pr["Has game description"][0].get<std::string>();
+            d = std::regex_replace(d, std::regex("<[^>]*>"), "");
+            d = CleanWiki(d);
+            d = std::regex_replace(d, std::regex("\\s+"), " ");
+            d = std::regex_replace(d, std::regex("^\\s+|\\s+$"), "");
+            out.description = d;
+        }
+        if (pr.contains("Has skill facts") && pr["Has skill facts"].is_array())
+            for (const auto& fb : pr["Has skill facts"]) {
+                if (!fb.is_string()) continue;
+                std::string blob = fb.get<std::string>();
+                for (size_t start = 0; start <= blob.size(); ) {
+                    size_t nl = blob.find('\n', start);
+                    std::string line = blob.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+                    std::string txt = StripWikiFact(line);
+                    if (!txt.empty()) { SkillFactM sf; sf.text = txt; out.facts.push_back(std::move(sf)); }
+                    if (nl == std::string::npos) break;
+                    start = nl + 1;
+                }
+            }
+        return !out.name.empty();
+    } catch (...) { return false; }
 }
 }

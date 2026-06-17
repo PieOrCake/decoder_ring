@@ -153,7 +153,7 @@ immediate call context — the struct layout may change between service versions
 
 | Link type | byte | Extra fields |
 |---|---|---|
-| Item | `0x02` | `bound` (DecoderBound), `noSell`, `tradeable`, `vendorValue` (copper), `rarity` (DecoderRarity) |
+| Item | `0x02` | `bound` (DecoderBound), `noSell`, `tradeable`, `vendorValue` (copper), `rarity` (DecoderRarity); **v3+** also `description[512]` + `facts[16]` (full tooltip — see below) |
 | Skill | `0x06` | `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) |
 | Waypoint/POI | `0x04` | `mapName[96]`, `poiType` (DecoderPoiKind) |
 | Build/AE2 | `0x0D` | Spec label in `name[]`; no additional fields |
@@ -179,6 +179,32 @@ from the same `/v2/items/:id` response as `name`/`iconUrl` (no extra fetch). Val
 > compile against the header version you check at runtime; a v1 consumer reading a v2 record simply
 > ignores the field. Old item disk-cache files (written by v1) are read without error — their
 > entries report `DR_RarityUnknown`.
+
+**Item full tooltip (`description[512]` + `facts[16]`)** — surfaced in schema version 3. The
+`description`/`facts` fields previously documented for skills now also carry **item** tooltip data,
+distilled from the same `/v2/items/:id` response (no extra fetch):
+
+- `description[]` — the item's flavour text (GW2 `<c=…>` colour / `<br>` markup stripped); `""` if none.
+- `facts[]` — pre-formatted tooltip lines, `icon` always `""` (text only). Lines are ordered for a
+  top-down read: `Defense: N` / `Weapon Strength: min - max`, then attributes (`+85 Power`,
+  `+101 Ferocity`), infusion slots (`Unused Infusion Slot`), rune/sigil set `bonuses` (verbatim),
+  subtype (`Coat`, `Greatsword`), weight (`Heavy Armor`), and `Required Level: N`. `factCount` gives
+  the valid count; entries past 16 are dropped.
+
+Runes/sigils carry their own set bonuses in **their** record — resolve an item's upgrade ids (encoded
+in the chat link) as separate item links to get those lines; records stay flat (no nested upgrades).
+
+**Skill names from the wiki.** Many skills (mount, siege-turtle, transform/environmental and other
+`.dat`-only skills) return 404 from `/v2/skills/:id`. For those, the service falls back to the GW2
+wiki to fill `name`, `description`, and `facts` — so they resolve like any other skill. This is
+transparent to consumers (no flag, no extra field); a skill the API can't name still arrives
+`DR_Resolved` with its canonical name. Wiki-sourced facts are text only (`icon == ""`). A skill that
+is in neither source resolves `DR_Failed` as usual.
+
+> **Schema version 3.** `DECODER_RING_API_VERSION` is now `3u`. This is a **semantic** extension only —
+> the struct layout is unchanged, so it is forward-compatible: a pre-v3 consumer ignores item
+> `description`/`facts`. Gate item-tooltip rendering on `schemaVersion >= 3`. The item disk cache was
+> bumped (`iteminfo_v2.json`); pre-v3 cache entries are simply refetched into the richer shape.
 
 ---
 

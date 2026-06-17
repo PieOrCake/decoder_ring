@@ -15,9 +15,14 @@ resolves build/AE2 labels and waypoint/POI names offline from compiled-in data. 
 and passes icon URLs — not textures — across the boundary; each consumer downloads and uploads its
 own texture.
 
-**Resolved link types:** item (name, icon, and rarity tier — Junk through Legendary), skin, skill
-(via `/v2` API) · build/AE2 spec label · waypoint/POI name · volatile trading-post price (in-memory,
-~5-min TTL, separate from the durable record).
+**Resolved link types:** item, skin, skill (via `/v2` API) · build/AE2 spec label · waypoint/POI
+name · volatile trading-post price (in-memory, ~5-min TTL, separate from the durable record).
+
+- **Items** carry full tooltip data: name, icon, rarity tier (Junk through Legendary), bound/vendor
+  info, flavour text, and pre-formatted stat lines (defense or weapon strength, attributes, infusion
+  slots, rune/sigil bonuses, weight, required level).
+- **Skills** that the `/v2` API doesn't have (mount, siege-turtle, transform and other `.dat`-only
+  skills) are named and described via a wiki fallback, so they resolve too.
 
 **API:** Two coupled halves, both keyed by `(linkType, id)`. Call `api->Resolve()` for an
 immediate warm result; subscribe `EV_DECODER_RING_RESOLVED` for the async completion when the

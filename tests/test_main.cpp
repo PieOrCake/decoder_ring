@@ -73,6 +73,8 @@ struct FakeTraits {
         m.value.assign(body.begin(), body.end());
         return !m.value.empty();
     }
+    static std::string FallbackUrl(uint32_t) { return ""; }                  // no fallback source
+    static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
     // No disk in this test.
     static const char* FileName() { return ""; }
     static nlohmann::json ToJson(const Meta& m) { return m.value; }
@@ -198,6 +200,111 @@ static void test_service_item_rarity() {
     svc.Shutdown();
 }
 
+// --- Item full-tooltip surfacing (schema v3) ---------------------------------
+// Real, untrimmed /v2/items bodies. Exercise the line mapping against genuine
+// API output (incl. the CritDamage->Ferocity mapping and <c=…>/<br> markup).
+static const char* kItemArmor = R"ITEM({"name":"Zojja's Breastplate","description":"<c=@flavor>Crafted in the style of the renowned asuran genius, Zojja.</c>","type":"Armor","level":80,"rarity":"Ascended","vendor_value":240,"default_skin":107,"game_types":["Activity","Wvw","Dungeon","Pve"],"flags":["HideSuffix","AccountBound","AccountBindOnUse"],"restrictions":[],"id":48073,"chat_link":"[&AgHJuwAA]","icon":"https://render.guildwars2.com/file/64725E0CEBDA22C75C16B70B0CDE58E4E6E7400A/699218.png","details":{"type":"Coat","weight_class":"Heavy","defense":381,"infusion_slots":[{"flags":["Infusion"]}],"attribute_adjustment":403.326,"infix_upgrade":{"id":161,"attributes":[{"attribute":"Power","modifier":141},{"attribute":"Precision","modifier":101},{"attribute":"CritDamage","modifier":101}]},"secondary_suffix_item_id":""}})ITEM";
+
+static const char* kItemWeapon = R"ITEM({"name":"Judgment Trident","description":"<c=@flavor>\"Great for environmentally friendly sabotage.\"<br>—Environmental Activist Jenrys</c>","type":"Weapon","level":69,"rarity":"Masterwork","vendor_value":174,"default_skin":3899,"game_types":["Activity","Wvw","Dungeon","Pve"],"flags":["HideSuffix","NoSalvage","NoSell","SoulbindOnAcquire","SoulBindOnUse"],"restrictions":[],"id":30680,"chat_link":"[&AgHYdwAA]","icon":"https://render.guildwars2.com/file/195C62FCE31ECE47100E4020CE6C909AB69FEA9C/562000.png","details":{"type":"Trident","damage_type":"Physical","min_power":617,"max_power":681,"defense":0,"infusion_slots":[],"attribute_adjustment":451.792,"infix_upgrade":{"id":162,"attributes":[{"attribute":"Power","modifier":158},{"attribute":"Toughness","modifier":113},{"attribute":"Vitality","modifier":113}]},"suffix_item_id":24613,"secondary_suffix_item_id":""}})ITEM";
+
+static const char* kItemRune = R"ITEM({"name":"Superior Rune of the Scholar","description":"<c=@abilitytype>Element: </c>Brilliance<br>Double-click to apply to a piece of armor.","type":"UpgradeComponent","level":60,"rarity":"Exotic","vendor_value":65,"game_types":["Activity","Wvw","Dungeon","Pve"],"flags":[],"restrictions":[],"id":24836,"chat_link":"[&AgEEYQAA]","icon":"https://render.guildwars2.com/file/4378ABC0415950DAC6A05C76920392D72E242EC2/220736.png","details":{"type":"Rune","flags":["HeavyArmor","LightArmor","MediumArmor"],"infusion_upgrade_flags":[],"bonuses":["+25 Power","+35 Ferocity","+50 Power","+65 Ferocity","+100 Power","+125 Ferocity"],"attribute_adjustment":0,"infix_upgrade":{"id":112,"attributes":[]},"suffix":"of the Scholar"}})ITEM";
+
+static const char* kItemCoin = R"ITEM({"name":"Mystic Coin","description":"Coins are used to create high-level weapons at the Mystic Forge in Lion's Arch. \nPart of Zommoros's favorite trades.","type":"Trophy","level":0,"rarity":"Rare","vendor_value":50,"game_types":["Activity","Wvw","Dungeon","Pve"],"flags":["NoSalvage","NoSell"],"restrictions":[],"id":19976,"chat_link":"[&AgEITgAA]","icon":"https://render.guildwars2.com/file/AB0317DF5B0E1BA47436A5420248660765154C08/62864.png"})ITEM";
+
+static bool LinesHave(const Decoder::ItemMeta& m, const char* want) {
+    for (auto& l : m.lines) if (l == want) return true;
+    return false;
+}
+static bool LinesContain(const Decoder::ItemMeta& m, const char* sub) {
+    for (auto& l : m.lines) if (l.find(sub) != std::string::npos) return true;
+    return false;
+}
+
+// Armour: defense, attributes (incl. CritDamage->Ferocity), infusion, weight,
+// subtype, level, flavour text. Also doubles as the bound-on-acquire case.
+static void test_item_armor_tooltip() {
+    Decoder::ItemMeta m;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(kItemArmor), m));
+    CHECK(m.rarity == DR_Ascended);
+    CHECK(m.description == "Crafted in the style of the renowned asuran genius, Zojja.");
+    CHECK(LinesHave(m, "Defense: 381"));
+    CHECK(LinesHave(m, "+141 Power"));
+    CHECK(LinesHave(m, "+101 Precision"));
+    CHECK(LinesHave(m, "+101 Ferocity"));          // CritDamage -> Ferocity display mapping
+    CHECK(LinesHave(m, "Unused Infusion Slot"));
+    CHECK(LinesHave(m, "Heavy Armor"));
+    CHECK(LinesHave(m, "Coat"));
+    CHECK(LinesHave(m, "Required Level: 80"));
+    CHECK(m.bound == DB_AccountOnAcquire);         // AccountBound flag
+    CHECK(m.tradeable == false);                   // bound-on-acquire -> not tradeable
+}
+
+// Weapon: weapon strength present, NO defense line; flavour markup stripped clean.
+static void test_item_weapon_tooltip() {
+    Decoder::ItemMeta m;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(kItemWeapon), m));
+    CHECK(LinesHave(m, "Weapon Strength: 617 - 681"));
+    CHECK(!LinesContain(m, "Defense"));            // a weapon never gets a defense line
+    CHECK(LinesHave(m, "+158 Power"));
+    CHECK(m.description.rfind("\"Great for environmentally friendly sabotage.\"", 0) == 0);
+    CHECK(m.description.find('<') == std::string::npos);   // <c=…>/<br> stripped
+}
+
+// Rune: details.bonuses appear verbatim (so a consumer renders them when it
+// resolves the parent item's upgrade ids).
+static void test_item_rune_bonuses() {
+    Decoder::ItemMeta m;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(kItemRune), m));
+    CHECK(LinesHave(m, "+25 Power"));
+    CHECK(LinesHave(m, "+35 Ferocity"));
+    CHECK(LinesHave(m, "+125 Ferocity"));
+}
+
+// NoSell must NOT gate tradeable (Mystic Coin: NoSell yet TP-traded).
+static void test_item_nosell_tradeable() {
+    Decoder::ItemMeta m;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(kItemCoin), m));
+    CHECK(m.noSell == true);
+    CHECK(m.tradeable == true);
+}
+
+// Disk cache v3: filename bumped (old shape refetched) and the new fields round-trip.
+static void test_item_cache_roundtrip_v3() {
+    CHECK(std::strcmp(Decoder::ItemTraits::FileName(), "iteminfo_v2.json") == 0);
+    Decoder::ItemMeta in; in.name = "X"; in.rarity = DR_Exotic; in.description = "flav";
+    in.lines = { "Defense: 100", "+10 Power" };
+    nlohmann::json j = Decoder::ItemTraits::ToJson(in);
+    Decoder::ItemMeta out; Decoder::ItemTraits::FromJson(j, out);
+    CHECK(out.description == "flav");
+    CHECK(out.lines.size() == 2 && out.lines[0] == "Defense: 100" && out.lines[1] == "+10 Power");
+}
+
+// Record mapping: a warm item resolve carries the tooltip lines as facts, bounded
+// to the cap and to text[160], with description set.
+static void test_service_item_tooltip() {
+    using namespace PieUI::ChatLinks;
+    std::vector<DecoderRecord> events;
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string&, std::vector<char>& out){ out.assign(kItemArmor, kItemArmor+std::strlen(kItemArmor)); return true; },
+        [&](const DecoderRecord& r){ events.push_back(r); });
+    DecoderRecord r;
+    CHECK(svc.Resolve(LINK_ITEM, 48073, r) == DR_NotReady);
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1);
+    const DecoderRecord& e = events[0];
+    CHECK(e.status == DR_Resolved);
+    CHECK(e.factCount > 0 && e.factCount <= 16);            // never overflows the cap
+    bool defense = false;
+    for (uint8_t i = 0; i < e.factCount; ++i) {
+        CHECK(std::strlen(e.facts[i].text) < 160);          // every line fits text[160]
+        if (std::strcmp(e.facts[i].text, "Defense: 381") == 0) defense = true;
+    }
+    CHECK(defense);
+    CHECK(e.description[0] != '\0');                         // flavour text carried into the record
+    svc.Shutdown();
+}
+
 static void test_skin_parse() {
     const char* json = R"({"name":"Mistforged Hero's","icon":"https://x/skin.png"})";
     Decoder::SkinMeta m;
@@ -218,6 +325,90 @@ static void test_skill_parse() {
     CHECK(m.facts.size() == 2);
     CHECK(m.facts[0].text == "Range: 1200");
     CHECK(m.facts[1].text == "Damage (x3)");
+}
+
+// --- Wiki skill-name fallback -------------------------------------------------
+// Real, untrimmed action=ask responses (wiki.guildwars2.com SMW) captured for
+// skills the /v2/skills API 404s on. These exercise the markup cleanup against
+// genuine wiki output, not invented HTML.
+static const char* kWiki63440 = R"WIKI({"query":{"printrequests":[{"label":"","key":"","redi":"","typeid":"_wpg","mode":2},{"label":"Has canonical name","key":"Has_canonical_name","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has game description","key":"Has_game_description","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has skill facts","key":"Has_skill_facts","redi":"","typeid":"_txt","mode":1,"format":""}],"results":{"Open Access":{"printouts":{"Has canonical name":["Open Access"],"Has game description":["Click to allow anyone to mount your turtle in the passenger slot."],"Has skill facts":[]},"fulltext":"Open Access","fullurl":"//wiki.guildwars2.com/wiki/Open_Access","namespace":0,"exists":"1","displaytitle":""}},"serializer":"SMW\\Serializers\\QueryResultSerializer","version":2,"meta":{"hash":"4b8dba87a385aef2e3c2736b74e40df2","count":1,"offset":0,"source":"","time":"0.006392"}}})WIKI";
+
+static const char* kWiki63475 = R"WIKI({"query":{"printrequests":[{"label":"","key":"","redi":"","typeid":"_wpg","mode":2},{"label":"Has canonical name","key":"Has_canonical_name","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has game description","key":"Has_game_description","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has skill facts","key":"Has_skill_facts","redi":"","typeid":"_txt","mode":1,"format":""}],"results":{"Slam":{"printouts":{"Has canonical name":["Slam"],"Has game description":["Leap and knock nearby foes back."],"Has skill facts":[":<span class=\"inline-icon effect\">[[File:Damage.png|20pxpx|link=Damage|]]</span>&nbsp;[[Damage|Damage]]: 8,180 <span style=\"color:gray\">(5.5)</span><sup><abbr title=\"(weapon strength) * 5.5 * Power / (target's Armor)\">?</abbr></sup>\n:<span class=\"inline-icon effect\">[[File:Crippled.png|20pxpx|link=Crippled|]]</span>&nbsp;[[Crippled|Cripple]]&nbsp;(6s): -50% [[Movement Speed]]\n:<span class=\"inline-icon effect\">[[File:Stun.png|20pxpx|link=Stun|]]</span>&nbsp;[[Stun|Bonus Defiance Damage]]: 2 seconds\n:<span class=\"inline-icon effect\">[[File:Number of targets.png|20px|link=Effect|]]</span>&nbsp;[[Number of Targets|Number of Targets]]: 10\n:<span class=\"inline-icon effect\">[[File:Evade.png|20px|link=Defiance Break|]]</span>&nbsp;<span class=\"hiddenlinks\" style=\"color: teal;\">[[Defiance Break|Defiance Break]]: 200</span>\n:<span class=\"inline-icon effect\">[[File:Range.png|20px|link=Range|]]</span>&nbsp;[[Range|Range]]: 600"]},"fulltext":"Slam","fullurl":"//wiki.guildwars2.com/wiki/Slam","namespace":0,"exists":"1","displaytitle":""}},"serializer":"SMW\\Serializers\\QueryResultSerializer","version":2,"meta":{"hash":"fb91ec07438e2810ea0c0e6511ea76e1","count":1,"offset":0,"source":"","time":"0.005416"}}})WIKI";
+
+static const char* kWiki55536 = R"WIKI({"query":{"printrequests":[{"label":"","key":"","redi":"","typeid":"_wpg","mode":2},{"label":"Has canonical name","key":"Has_canonical_name","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has game description","key":"Has_game_description","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has skill facts","key":"Has_skill_facts","redi":"","typeid":"_txt","mode":1,"format":""}],"results":{"Blast":{"printouts":{"Has canonical name":["Blast"],"Has game description":["'''[[Engage]].'''&#32;While on land, leap into the air and breathe fire ahead of you. If in the air, descend toward the ground before attacking."],"Has skill facts":[":<span class=\"inline-icon effect\">[[File:Damage.png|20pxpx|link=Damage|]]</span>&nbsp;[[Damage|Damage]]&nbsp;(4x): 3,448 <span style=\"color:gray\">(4.22)</span><sup><abbr title=\"(weapon strength) * 4.22 * Power / (target's Armor)\">?</abbr></sup>\n:<span class=\"inline-icon effect\">[[File:Burning.png|20pxpx|link=Burning|]]</span><sub>5</sub>&nbsp;[[Burning|Burning]]&nbsp;(1s): 655 Damage\n:<span class=\"inline-icon effect\">[[File:Miscellaneous effect.png|20px|link=Effect|]]</span>&nbsp;Dismounts\n:<span class=\"inline-icon effect\">[[File:Combo.png|20pxpx|link=Combo|]]</span>&nbsp;[[Combo|Combo Field]]: [[Fire field|Fire]][[Category:Fire field skills]]"]},"fulltext":"Blast","fullurl":"//wiki.guildwars2.com/wiki/Blast","namespace":0,"exists":"1","displaytitle":""}},"serializer":"SMW\\Serializers\\QueryResultSerializer","version":2,"meta":{"hash":"7755fa28c01836f4a896b7df4da3cc6b","count":1,"offset":0,"source":"","time":"0.007057"}}})WIKI";
+
+static bool FactsHave(const Decoder::SkillMeta& m, const char* want) {
+    for (auto& f : m.facts) if (f.text == want) return true;
+    return false;
+}
+
+// The collision filter: id 63440 also names item "Defender's Staff". The
+// [[Has context::Skill]] constraint must keep ParseFallback on the skill page.
+static void test_skill_fallback_collision() {
+    Decoder::SkillMeta m;
+    CHECK(Decoder::SkillTraits::ParseFallback(Bytes(kWiki63440), m));
+    CHECK(m.name == "Open Access");                  // NOT "Defender's Staff"
+    std::string u = Decoder::SkillTraits::FallbackUrl(63440);
+    CHECK(u.find("63440") != std::string::npos);     // id present
+    CHECK(u.find("Skill") != std::string::npos);     // [[Has context::Skill]] carried (url-encoded)
+}
+
+// Slam: canonical name (not the "(turtle)" page title), description, and the full
+// fact set incl. Defiance Break kept as an ordinary text-only fact.
+static void test_skill_fallback_facts() {
+    Decoder::SkillMeta m;
+    CHECK(Decoder::SkillTraits::ParseFallback(Bytes(kWiki63475), m));
+    CHECK(m.name == "Slam");
+    CHECK(m.description == "Leap and knock nearby foes back.");
+    CHECK(FactsHave(m, "Damage: 8,180 (5.5)"));
+    CHECK(FactsHave(m, "Cripple (6s): -50% Movement Speed"));
+    CHECK(FactsHave(m, "Number of Targets: 10"));
+    CHECK(FactsHave(m, "Defiance Break: 200"));      // kept as a normal fact, not special-cased
+    CHECK(FactsHave(m, "Range: 600"));
+    for (auto& f : m.facts) CHECK(f.icon.empty());   // wiki facts carry File: images -> text only
+}
+
+// Blast: bold/entity cleanup in the description and [[Category:…]] stripped from a
+// fact (must NOT leak as "FireCategory:Fire field skills").
+static void test_skill_fallback_markup() {
+    Decoder::SkillMeta m;
+    CHECK(Decoder::SkillTraits::ParseFallback(Bytes(kWiki55536), m));
+    CHECK(m.name == "Blast");
+    CHECK(m.description.rfind("Engage. While on land, leap into the air", 0) == 0);
+    CHECK(FactsHave(m, "Combo Field: Fire"));
+    CHECK(!FactsHave(m, "Combo Field: FireCategory:Fire field skills"));
+}
+
+// An empty result set serialises as [] (array). Must fail -> caller degrades to a
+// plain [Skill], never invents a name.
+static void test_skill_fallback_empty() {
+    Decoder::SkillMeta m;
+    CHECK(!Decoder::SkillTraits::ParseFallback(Bytes(R"({"query":{"results":[]}})"), m));
+    CHECK(m.name.empty());
+}
+
+// AsyncResolver fallback wiring: a skill id whose primary /v2 Parse fails but whose
+// wiki ParseFallback succeeds must end up Warm and emit a (id,true) completion.
+static void test_async_skill_fallback_path() {
+    using R = Decoder::AsyncResolver<Decoder::SkillTraits>;
+    R res;
+    res.Initialize("", [&](const std::string& url, std::vector<char>& out){
+        if (url.find("api.guildwars2.com") != std::string::npos) {
+            const char* j = R"({"text":"no such id"})";   // 404-style body: valid JSON, no "name"
+            out.assign(j, j + std::strlen(j)); return true;
+        }
+        out.assign(kWiki63475, kWiki63475 + std::strlen(kWiki63475)); return true;  // wiki ask
+    });
+    using GS = Decoder::GetState;
+    Decoder::SkillMeta m;
+    CHECK(res.Get(63475, m) == GS::Pending);          // cold -> kicks primary fetch
+    std::vector<std::pair<uint32_t,bool>> done;
+    for (int i=0;i<200 && done.empty();++i){ res.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(done.size() == 1 && done[0].first == 63475);
+    CHECK(done[0].second == true);                     // primary failed -> fallback resolved
+    CHECK(res.Get(63475, m) == GS::Warm);
+    CHECK(m.name == "Slam");                           // named via the wiki, not the API
+    res.Shutdown();
 }
 
 static void test_price_cache() {
@@ -423,8 +614,19 @@ int main() {
     test_item_rarity_values();
     test_item_rarity_cache_compat();
     test_service_item_rarity();
+    test_item_armor_tooltip();
+    test_item_weapon_tooltip();
+    test_item_rune_bonuses();
+    test_item_nosell_tradeable();
+    test_item_cache_roundtrip_v3();
+    test_service_item_tooltip();
     test_skin_parse();
     test_skill_parse();
+    test_skill_fallback_collision();
+    test_skill_fallback_facts();
+    test_skill_fallback_markup();
+    test_skill_fallback_empty();
+    test_async_skill_fallback_path();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

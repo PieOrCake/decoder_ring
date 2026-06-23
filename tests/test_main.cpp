@@ -568,6 +568,44 @@ static void test_recipe_parse() {
     CHECK(!Decoder::RecipeTraits::Parse(Bytes(R"({"id":1})"), bad));
 }
 
+// Routes a batch /v2/items?ids= and /v2/guild/upgrades?ids= fetch to captured bodies.
+static Decoder::HttpFetch RecipeFetch() {
+    return [](const std::string& url, std::vector<char>& out) {
+        std::string b;
+        if (url.find("/v2/items?ids=62905") != std::string::npos)
+            b = R"([{"id":62905,"name":"Elegant Huntsman's Backpack","type":"Back","rarity":"Exotic","icon":"https://x/eb.png"},{"id":62948,"name":"Elegant Huntsman's Tools","type":"CraftingMaterial","rarity":"Exotic","icon":"https://x/t.png"},{"id":62901,"name":"Ornate Huntsman's Backpack","type":"Back","rarity":"Exotic","icon":"https://x/o.png"},{"id":19721,"name":"Glob of Ectoplasm","type":"Trophy","rarity":"Exotic","icon":"https://x/e.png"}])";
+        else if (url.find("/v2/items?ids=77721") != std::string::npos)
+            b = R"([{"id":77721,"name":"Silver Tequatl Trophy","type":"Consumable","rarity":"Basic","icon":"https://x/s.png"},{"id":70489,"name":"Master's Finishing Kit","type":"CraftingMaterial","rarity":"Fine","icon":"https://x/k.png"}])";
+        else if (url.find("/v2/guild/upgrades?ids=706") != std::string::npos)
+            b = R"([{"id":706,"name":"Bronze Tequatl Trophy","type":"Decoration","icon":"https://x/b.png"}])";
+        else return false;
+        out.assign(b.begin(), b.end()); return true;
+    };
+}
+static bool LinesHaveR(const Decoder::RecipeMeta& m, const std::string& s) {
+    for (auto& l : m.lines) if (l == s) return true; return false;
+}
+static void test_recipe_resolve_deps() {
+    auto fetch = RecipeFetch();
+    // Equipment output -> "(Exotic)" suffix, ingredient lines (count omitted when 1), rating last.
+    Decoder::RecipeMeta m; Decoder::RecipeTraits::Parse(Bytes(kRecipe9508), m);
+    CHECK(Decoder::RecipeTraits::ResolveDeps(m, fetch));
+    CHECK(m.name == "Recipe: Elegant Huntsman's Backpack (Exotic)");
+    CHECK(m.icon == "https://x/eb.png");
+    CHECK(m.outputItemId == 62905);
+    CHECK(LinesHaveR(m, "Elegant Huntsman's Tools"));      // count 1 -> no number
+    CHECK(LinesHaveR(m, "3 Glob of Ectoplasm"));           // count 3 -> singular name
+    CHECK(LinesHaveR(m, "Required Rating: 400"));
+
+    // Material output (Basic, type Consumable) -> NO suffix; guild ingredient line present.
+    Decoder::RecipeMeta g; Decoder::RecipeTraits::Parse(Bytes(kRecipe11777), g);
+    CHECK(Decoder::RecipeTraits::ResolveDeps(g, fetch));
+    CHECK(g.name == "Recipe: Silver Tequatl Trophy");
+    CHECK(LinesHaveR(g, "Master's Finishing Kit"));
+    CHECK(LinesHaveR(g, "10 Bronze Tequatl Trophy"));      // guild ingredient
+    CHECK(LinesHaveR(g, "Required Rating: 350"));
+}
+
 static void test_service_end_to_end() {
     using namespace PieUI::ChatLinks;
     std::vector<DecoderRecord> events;       // captured completion sink
@@ -775,6 +813,7 @@ int main() {
     test_skill_enrich_guard();
     test_async_skill_enrich_path();
     test_recipe_parse();
+    test_recipe_resolve_deps();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

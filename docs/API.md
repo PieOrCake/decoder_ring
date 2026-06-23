@@ -36,7 +36,7 @@ regardless of which addon loads first, and cannot deadlock in either direction.
 
 > **Critical:** the DataLink block outlives the DLL. After unload, `DataLink_Get` still returns a
 > non-null pointer to the (now-zeroed) struct. **Never call a `DecoderRingApi*` without first
-> checking `apiVersion == DECODER_RING_API_VERSION` — a stale pointer to an unloaded service is the
+> checking `apiVersion >= DECODER_RING_API_VERSION` — a stale pointer to an unloaded service is the
 > single most likely way to crash the game.** See [section 7](#7-consumer-lifetime-contract-required).
 
 **What your addon must do on its own load (in this order):**

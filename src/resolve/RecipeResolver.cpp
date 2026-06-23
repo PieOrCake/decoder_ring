@@ -89,7 +89,9 @@ bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch) {
     return true;
 }
 
-// ToJson/FromJson -> Task 4:
+// Disk cache stores ONLY the composed result (name/icon/lines/oid) — the transient
+// parse fields (minRating/ingredients/guild) aren't persisted, so a warm cache hit
+// serves the finished record and never re-runs ResolveDeps.
 nlohmann::json RecipeTraits::ToJson(const Meta& m) {
     nlohmann::json ln = nlohmann::json::array();
     for (auto& l : m.lines) ln.push_back(l);

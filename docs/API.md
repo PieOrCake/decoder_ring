@@ -48,8 +48,12 @@ regardless of which addon loads first, and cannot deadlock in either direction.
 static DecoderRingApi* GetDecoder() {
     auto* api = static_cast<DecoderRingApi*>(
         APIDefs->DataLink_Get(DECODER_RING_DATALINK));
-    return (api && api->apiVersion == DECODER_RING_API_VERSION) ? api : nullptr;
+    return (api && api->apiVersion >= DECODER_RING_API_VERSION) ? api : nullptr;
 }
+// The service guarantees that the record layout only ever extends semantically
+// (fields reused or overloaded, never relocated), so a newer service version is
+// safe for an older consumer. Gate features added in later versions by checking
+// rec.schemaVersion against the specific version that introduced them.
 
 // READY/UNLOADING are notifications for UI state only — they let you flip a
 // "present" indicator live. They are NOT a substitute for GetDecoder() at call time.
@@ -136,8 +140,9 @@ void ShowChatLinkTooltip(uint8_t linkType, uint32_t id, const char* chatCode) {
 }
 ```
 
-Always check `rec.schemaVersion == DECODER_RING_API_VERSION` if you read the record outside the
-immediate call context — the struct layout may change between service versions.
+Always check `rec.schemaVersion >= DECODER_RING_API_VERSION` if you read the record outside the
+immediate call context. Gate features added in later schema versions on the specific version (e.g.
+recipe fields on `>= 4`).
 
 **Fields common to all link types (valid whenever `status == DR_Resolved`):**
 
@@ -158,6 +163,7 @@ immediate call context — the struct layout may change between service versions
 | Waypoint/POI | `0x04` | `mapName[96]`, `poiType` (DecoderPoiKind) |
 | Build/AE2 | `0x0D` | Spec label in `name[]`; no additional fields |
 | Skin | `0x0A` | `name[]` and `iconUrl[]` only |
+| Recipe | `0x09` | **v4+** `name[]`, `iconUrl[]`, `facts[16]`, `vendorValue` (output item id) — see below |
 
 **Item `rarity` (`uint8_t`, holds a `DecoderRarity` value)** — added in schema version 2. Distilled
 from the same `/v2/items/:id` response as `name`/`iconUrl` (no extra fetch). Values:
@@ -206,6 +212,25 @@ is in neither source resolves `DR_Failed` as usual.
 > `description`/`facts`. Gate item-tooltip rendering on `schemaVersion >= 3`. The item disk cache was
 > bumped (`iteminfo_v2.json`); pre-v3 cache entries are simply refetched into the richer shape.
 
+**Recipe links (`0x09`)** — surfaced in schema version 4. Gate on `schemaVersion >= 4`.
+
+- `name[]` — `"Recipe: <output name>"`. For equipment-type outputs (Armor, Weapon, Back, Trinket,
+  UpgradeComponent) the rarity suffix is appended: `"Recipe: Zojja's Berserker Helm (Ascended)"`.
+- `iconUrl[]` — the output item's icon URL.
+- `facts[]` — pre-formatted ingredient and crafting-requirement lines. Each ingredient appears as
+  `"<name>"` (quantity 1) or `"<count> <name>"` (quantity > 1). Guild-ingredient lines follow the
+  same format. The last line, if applicable, is `"Required Rating: N"`. `factCount` gives the valid
+  count.
+- `vendorValue` — the output **item id** (not a copper value). Resolve it as a `0x02` item link via
+  `api->Resolve(0x02, vendorValue, nullptr, &rec)` to obtain the full item record, including the
+  native second-panel equipment tooltip.
+
+Recipes are cached on disk (`recipeinfo_v1.json`).
+
+> **Schema version 4.** `DECODER_RING_API_VERSION` is now `4u`. Semantic extension only — the struct
+> layout is unchanged, so a pre-v4 consumer ignores recipe fields. A v4 service is fully compatible
+> with a v3 consumer; gate recipe rendering on `schemaVersion >= 4`.
+
 ---
 
 ## 4. Miss event — `EV_DECODER_RING_RESOLVED`
@@ -221,8 +246,9 @@ static void OnResolved(void* payload) {
     if (!payload) return;
     auto* rec = static_cast<const DecoderRecord*>(payload);
 
-    // Verify the schema version matches what you compiled against.
-    if (rec->schemaVersion != DECODER_RING_API_VERSION) return;
+    // Accept records from any service version >= what you compiled against.
+    // A newer service extending the layout is still safe to read.
+    if (rec->schemaVersion < DECODER_RING_API_VERSION) return;
 
     // Match to a pending request using the (linkType, id) correlation key.
     if (rec->linkType == myPendingLinkType && rec->id == myPendingId) {
@@ -304,10 +330,12 @@ decoder->Resolve(linkType, id, chatCode, &rec);
 // ...
 ```
 
-**Version mismatch:** If `DataLink_Get` returns non-null but `apiVersion !=
-DECODER_RING_API_VERSION`, treat it as absent — the struct layout may have changed (or the service
-just unloaded and zeroed it) and calling through mismatched/null pointers is undefined behaviour.
-`GetDecoder()` already folds this check in. Do not store the pointer.
+**Version mismatch:** Treat `apiVersion < DECODER_RING_API_VERSION` as absent — that service is
+older than what you compiled against and may lack fields you depend on. A `>=` service is
+compatible: the layout is guaranteed to only extend (never relocate), so `GetDecoder()` admits it.
+If you are currently using a strict `==` check, migrate it to `>=` once — otherwise your consumer
+sees a newer service as absent. `GetDecoder()` already uses `>=`, so consumers that copy it exactly
+need no change.
 
 ---
 

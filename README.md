@@ -23,6 +23,8 @@ name · volatile trading-post price (in-memory, ~5-min TTL, separate from the du
   slots, rune/sigil bonuses, weight, required level).
 - **Skills** that the `/v2` API doesn't have (mount, siege-turtle, transform and other `.dat`-only
   skills) are named and described via a wiki fallback, so they resolve too.
+- **Recipes** resolve to "Recipe: \<item\>" with the full ingredient list and required crafting
+  rating.
 
 **API:** Two coupled halves, both keyed by `(linkType, id)`. Call `api->Resolve()` for an
 immediate warm result; subscribe `EV_DECODER_RING_RESOLVED` for the async completion when the

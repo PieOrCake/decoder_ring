@@ -619,6 +619,37 @@ static void test_recipe_json_roundtrip() {
     CHECK(r.lines.size() == 3 && r.lines[1] == "3 Glob of Ectoplasm");
 }
 
+static void test_service_recipe_endtoend() {
+    using namespace PieUI::ChatLinks;
+    Decoder::DecoderService svc;
+    std::atomic<int> events{0};
+    DecoderRecord last{};
+    // recipe id 9508: first /v2/recipes/9508, then the batch item fetch.
+    auto fetch = [](const std::string& url, std::vector<char>& out) {
+        std::string b;
+        if (url.find("/v2/recipes/9508") != std::string::npos) b = kRecipe9508;
+        else if (url.find("/v2/items?ids=62905") != std::string::npos)
+            b = R"([{"id":62905,"name":"Elegant Huntsman's Backpack","type":"Back","rarity":"Exotic","icon":"https://x/eb.png"},{"id":62948,"name":"Elegant Huntsman's Tools","type":"CraftingMaterial","rarity":"Exotic","icon":"https://x/t.png"},{"id":62901,"name":"Ornate Huntsman's Backpack","type":"Back","rarity":"Exotic","icon":"https://x/o.png"},{"id":19721,"name":"Glob of Ectoplasm","type":"Trophy","rarity":"Exotic","icon":"https://x/e.png"}])";
+        else return false;
+        out.assign(b.begin(), b.end()); return true;
+    };
+    svc.Initialize("", fetch, [&](const DecoderRecord& r){ ++events; last = r; });
+
+    DecoderRecord out{};
+    // Cold -> NotReady; a completion is guaranteed.
+    CHECK(svc.Resolve(LINK_RECIPE, 9508, std::string(), out) == DR_NotReady);
+    for (int i=0;i<200 && events.load()==0;++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.load() >= 1);
+
+    DecoderRecord r{};
+    CHECK(svc.Resolve(LINK_RECIPE, 9508, std::string(), r) == DR_Resolved);
+    CHECK(std::strcmp(r.name, "Recipe: Elegant Huntsman's Backpack (Exotic)") == 0);
+    CHECK(std::strcmp(r.iconUrl, "https://x/eb.png") == 0);
+    CHECK((uint32_t)r.vendorValue == 62905u);     // output_item_id carried in the vendorValue slot
+    CHECK(r.factCount >= 3);
+    svc.Shutdown();
+}
+
 static void test_service_end_to_end() {
     using namespace PieUI::ChatLinks;
     std::vector<DecoderRecord> events;       // captured completion sink
@@ -828,6 +859,7 @@ int main() {
     test_recipe_parse();
     test_recipe_resolve_deps();
     test_recipe_json_roundtrip();
+    test_service_recipe_endtoend();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

@@ -3,6 +3,7 @@
 #include "resolve/ItemResolver.h"
 #include "resolve/SkinResolver.h"
 #include "resolve/SkillResolver.h"
+#include "resolve/RecipeResolver.h"
 #include "resolve/PriceCache.h"
 #include "resolve/OfflineResolve.h"
 #include "resolve/RecordFill.h"
@@ -20,8 +21,9 @@ void DecoderService::SleepMs(int ms) { std::this_thread::sleep_for(std::chrono::
 struct DecoderService::Impl {
     AsyncResolver<ItemTraits>  item;
     AsyncResolver<SkinTraits>  skin;
-    AsyncResolver<SkillTraits> skill;
-    PriceCache                 price;
+    AsyncResolver<SkillTraits>   skill;
+    AsyncResolver<RecipeTraits>  recipe;
+    PriceCache                   price;
     CompletionSink             sink;
 
     static void FillItem(DecoderRecord& r, const ItemMeta& m) {
@@ -44,13 +46,21 @@ struct DecoderService::Impl {
         for (uint8_t i = 0; i < n; ++i) { CopyField(r.facts[i].icon, m.facts[i].icon); CopyField(r.facts[i].text, m.facts[i].text); }
         r.factCount = n;
     }
+    static void FillRecipe(DecoderRecord& r, const RecipeMeta& m) {
+        CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);
+        r.vendorValue = (int32_t)m.outputItemId;   // overloaded: recipe links carry output_item_id here
+        uint8_t n = (uint8_t)(m.lines.size() < 16 ? m.lines.size() : 16);
+        for (uint8_t i = 0; i < n; ++i) { r.facts[i].icon[0] = '\0'; CopyField(r.facts[i].text, m.lines[i]); }
+        r.factCount = n;
+    }
 
     // Build a resolved record from warm meta for emission.
     void EmitResolved(uint8_t type, uint32_t id) {
         DecoderRecord r;
         if (type == LINK_ITEM)       { ItemMeta m;  if (item.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillItem(r, m);  sink(r); } }
         else if (type == LINK_SKIN)  { SkinMeta m;  if (skin.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkin(r, m);  sink(r); } }
-        else if (type == LINK_SKILL) { SkillMeta m; if (skill.Get(id, m) == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkill(r, m); sink(r); } }
+        else if (type == LINK_SKILL)  { SkillMeta m;  if (skill.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkill(r, m);  sink(r); } }
+        else if (type == LINK_RECIPE) { RecipeMeta m; if (recipe.Get(id, m) == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillRecipe(r, m); sink(r); } }
     }
     void EmitFailed(uint8_t type, uint32_t id) {
         DecoderRecord r; InitRecord(r, type, id, DR_Failed); sink(r);
@@ -69,16 +79,17 @@ void DecoderService::Initialize(const std::string& dir, HttpFetch fetch, Complet
     m_p->item.Initialize(dir, fetch);
     m_p->skin.Initialize(dir, fetch);
     m_p->skill.Initialize(dir, fetch);
+    m_p->recipe.Initialize(dir, fetch);
     m_p->price.Initialize(fetch);
 }
 void DecoderService::Shutdown() {
     if (!m_p) return;
-    m_p->item.Shutdown(); m_p->skin.Shutdown(); m_p->skill.Shutdown(); m_p->price.Shutdown();
+    m_p->item.Shutdown(); m_p->skin.Shutdown(); m_p->skill.Shutdown(); m_p->recipe.Shutdown(); m_p->price.Shutdown();
     delete m_p; m_p = nullptr;
 }
 void DecoderService::SetFailCooldownSec(int s) {
     if (!m_p) return;
-    m_p->item.SetFailCooldownSec(s); m_p->skin.SetFailCooldownSec(s); m_p->skill.SetFailCooldownSec(s);
+    m_p->item.SetFailCooldownSec(s); m_p->skin.SetFailCooldownSec(s); m_p->skill.SetFailCooldownSec(s); m_p->recipe.SetFailCooldownSec(s);
 }
 
 DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::string& chatCode, DecoderRecord& out) {
@@ -116,6 +127,14 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
             case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
         }
     }
+    if (type == LINK_RECIPE) {
+        RecipeMeta m;
+        switch (m_p->recipe.Get(id, m)) {
+            case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillRecipe(out, m); return DR_Resolved;
+            case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+            case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
+        }
+    }
     InitRecord(out, type, id, DR_Failed);
     return DR_Failed;   // unsupported type
 }
@@ -130,7 +149,8 @@ void DecoderService::Tick() {
     m_p->DrainResolver(m_p->item, LINK_ITEM);
     m_p->DrainResolver(m_p->skin, LINK_SKIN);
     m_p->DrainResolver(m_p->skill, LINK_SKILL);
-    m_p->item.Tick(); m_p->skin.Tick(); m_p->skill.Tick();
+    m_p->DrainResolver(m_p->recipe, LINK_RECIPE);
+    m_p->item.Tick(); m_p->skin.Tick(); m_p->skill.Tick(); m_p->recipe.Tick();
     // Price completions don't carry a durable record; consumers re-query QueryPrice.
     std::vector<uint32_t> pdone; m_p->price.DrainCompleted(pdone);
 }

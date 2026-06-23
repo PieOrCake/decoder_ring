@@ -23,6 +23,7 @@ set(CORE_SOURCES
     src/chat/ChatLinks.cpp
     src/chat/WaypointNames.cpp
     src/resolve/ItemResolver.cpp
+    src/resolve/RecipeResolver.cpp
     src/resolve/SkinResolver.cpp
     src/resolve/SkillResolver.cpp
     src/resolve/PriceCache.cpp

@@ -6,6 +6,7 @@
 #include "resolve/ItemResolver.h"
 #include "resolve/SkinResolver.h"
 #include "resolve/SkillResolver.h"
+#include "resolve/RecipeResolver.h"
 #include "resolve/PriceCache.h"
 #include "resolve/DecoderService.h"
 #include <atomic>
@@ -544,6 +545,29 @@ static void test_price_cache() {
     pc.Shutdown();
 }
 
+static const char* kRecipe9508 = R"RCP({"id":9508,"type":"Backpack","output_item_id":62905,"output_item_count":1,"time_to_craft_ms":1000,"disciplines":["Huntsman"],"min_rating":400,"flags":["AutoLearned"],"ingredients":[{"item_id":62948,"count":1},{"item_id":62901,"count":1},{"item_id":19721,"count":3}],"chat_link":"[&CSQlAAA=]","guild_ingredients":[]})RCP";
+static const char* kRecipe11777 = R"RCP({"id":11777,"type":"GuildDecoration","output_item_id":77721,"output_item_count":1,"time_to_craft_ms":1000,"disciplines":["Scribe"],"min_rating":350,"flags":["AutoLearned"],"ingredients":[{"item_id":70489,"count":1}],"output_upgrade_id":670,"chat_link":"[&CQEuAAA=]","guild_ingredients":[{"upgrade_id":706,"count":10}]})RCP";
+
+static void test_recipe_parse() {
+    Decoder::RecipeMeta m;
+    CHECK(Decoder::RecipeTraits::Parse(Bytes(kRecipe9508), m));
+    CHECK(m.outputItemId == 62905);
+    CHECK(m.minRating == 400);
+    CHECK(m.ingredients.size() == 3);
+    CHECK(m.ingredients[2].id == 19721 && m.ingredients[2].count == 3);
+    CHECK(m.guild.empty());
+
+    Decoder::RecipeMeta g;
+    CHECK(Decoder::RecipeTraits::Parse(Bytes(kRecipe11777), g));
+    CHECK(g.outputItemId == 77721 && g.minRating == 350);
+    CHECK(g.ingredients.size() == 1 && g.ingredients[0].id == 70489);
+    CHECK(g.guild.size() == 1 && g.guild[0].id == 706 && g.guild[0].count == 10);
+
+    // A body with no output_item_id is not a recipe -> Parse fails (never persisted).
+    Decoder::RecipeMeta bad;
+    CHECK(!Decoder::RecipeTraits::Parse(Bytes(R"({"id":1})"), bad));
+}
+
 static void test_service_end_to_end() {
     using namespace PieUI::ChatLinks;
     std::vector<DecoderRecord> events;       // captured completion sink
@@ -750,6 +774,7 @@ int main() {
     test_skill_enrich_none();
     test_skill_enrich_guard();
     test_async_skill_enrich_path();
+    test_recipe_parse();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

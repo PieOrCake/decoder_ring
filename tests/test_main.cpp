@@ -606,6 +606,19 @@ static void test_recipe_resolve_deps() {
     CHECK(LinesHaveR(g, "Required Rating: 350"));
 }
 
+static void test_recipe_json_roundtrip() {
+    Decoder::RecipeMeta m;
+    m.name = "Recipe: Elegant Huntsman's Backpack (Exotic)";
+    m.icon = "https://x/eb.png"; m.outputItemId = 62905;
+    m.lines = { "Elegant Huntsman's Tools", "3 Glob of Ectoplasm", "Required Rating: 400" };
+    auto j = Decoder::RecipeTraits::ToJson(m);
+    Decoder::RecipeMeta r; Decoder::RecipeTraits::FromJson(j, r);
+    CHECK(r.name == m.name);
+    CHECK(r.icon == m.icon);
+    CHECK(r.outputItemId == 62905);
+    CHECK(r.lines.size() == 3 && r.lines[1] == "3 Glob of Ectoplasm");
+}
+
 static void test_service_end_to_end() {
     using namespace PieUI::ChatLinks;
     std::vector<DecoderRecord> events;       // captured completion sink
@@ -814,6 +827,7 @@ int main() {
     test_async_skill_enrich_path();
     test_recipe_parse();
     test_recipe_resolve_deps();
+    test_recipe_json_roundtrip();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

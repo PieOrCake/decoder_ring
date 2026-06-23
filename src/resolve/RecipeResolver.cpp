@@ -89,7 +89,18 @@ bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch) {
     return true;
 }
 
-// ToJson/FromJson -> Task 4 (stubs here so it links):
-nlohmann::json RecipeTraits::ToJson(const Meta& m) { return nlohmann::json::object(); }
-void RecipeTraits::FromJson(const nlohmann::json&, Meta&) {}
+// ToJson/FromJson -> Task 4:
+nlohmann::json RecipeTraits::ToJson(const Meta& m) {
+    nlohmann::json ln = nlohmann::json::array();
+    for (auto& l : m.lines) ln.push_back(l);
+    return nlohmann::json{ {"n",m.name},{"ic",m.icon},{"oid",m.outputItemId},{"ln",std::move(ln)} };
+}
+void RecipeTraits::FromJson(const nlohmann::json& j, Meta& m) {
+    if (!j.is_object()) return;
+    if (j.contains("n"))  m.name = j["n"].get<std::string>();
+    if (j.contains("ic")) m.icon = j["ic"].get<std::string>();
+    if (j.contains("oid")) m.outputItemId = j["oid"].get<uint32_t>();
+    if (j.contains("ln") && j["ln"].is_array())
+        for (auto& l : j["ln"]) if (l.is_string()) m.lines.push_back(l.get<std::string>());
+}
 }

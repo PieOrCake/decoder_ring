@@ -31,6 +31,7 @@ enum class GetState { Warm, Pending, Failed };
 //   static bool Parse(const std::vector<char>& body, Meta&);
 //   static std::string FallbackUrl(uint32_t id); // "" = no fallback source
 //   static bool ParseFallback(const std::vector<char>&, Meta&);
+//   static bool ResolveDeps(Meta&, const HttpFetch&); // dependent fetches before completion; false = fail
 //   static std::string EnrichUrl(uint32_t id, const Meta&); // "" = no enrichment
 //   static bool ParseEnrich(const std::vector<char>&, Meta&); // mutate; true if changed
 //   static const char* FileName();               // "" disables disk
@@ -148,6 +149,11 @@ private:
                     ok = m_Fetch(furl, fbody) && Traits::ParseFallback(fbody, meta);
                 }
             }
+            // Dependent fetches (only RecipeTraits opts in; others return true no-op).
+            // Runs on the worker, before the completion is enqueued, so a resolver that
+            // must fetch derived ids (recipe -> output/ingredient items) emits exactly
+            // ONE fully-composed completion. A dependency failure fails the whole resolve.
+            if (ok && m_Fetch) ok = Traits::ResolveDeps(meta, m_Fetch);
             // Decide on enrichment BEFORE we move meta (EnrichUrl reads it).
             std::string eurl = (ok && m_Fetch) ? Traits::EnrichUrl(id, meta) : std::string();
             {

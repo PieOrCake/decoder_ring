@@ -1,5 +1,6 @@
 #pragma once
 #include "DecoderRingApi.h"
+#include "resolve/Http.h"
 #include "nlohmann/json.hpp"
 #include <string>
 #include <vector>
@@ -15,6 +16,7 @@ struct SkillTraits {
     // so on a primary miss AsyncResolver retries against the wiki's SMW ask API.
     static std::string FallbackUrl(uint32_t id);
     static bool ParseFallback(const std::vector<char>& body, Meta& out);
+    static bool ResolveDeps(Meta&, const HttpFetch&) { return true; }        // no dependent fetches
     // Secondary low-priority wiki lookup run AFTER an API resolve: the /v2 API has no
     // breakbar field, so this adds the "Defiance Break: N" fact (skipped when the meta
     // already carries one, e.g. wiki-fallback skills). "" = nothing to enrich.

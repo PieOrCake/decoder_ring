@@ -75,6 +75,7 @@ struct FakeTraits {
     }
     static std::string FallbackUrl(uint32_t) { return ""; }                  // no fallback source
     static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
+    static bool ResolveDeps(Meta&, const Decoder::HttpFetch&) { return true; } // no dependent fetches
     static std::string EnrichUrl(uint32_t, const Meta&) { return ""; }       // no enrichment
     static bool ParseEnrich(const std::vector<char>&, Meta&) { return false; }
     // No disk in this test.
@@ -82,6 +83,38 @@ struct FakeTraits {
     static nlohmann::json ToJson(const Meta& m) { return m.value; }
     static void FromJson(const nlohmann::json& j, Meta& m) { if (j.is_string()) m.value = j.get<std::string>(); }
 };
+
+struct DepsTraits {
+    using Meta = FakeMeta;
+    static std::string Url(uint32_t id) { return "fake://" + std::to_string(id); }
+    static bool Parse(const std::vector<char>& body, Meta& m) { m.value.assign(body.begin(), body.end()); return !m.value.empty(); }
+    static std::string FallbackUrl(uint32_t) { return ""; }
+    static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
+    static bool ResolveDeps(Meta& m, const Decoder::HttpFetch& fetch) {
+        std::vector<char> b; if (!fetch("dep://x", b)) return false;
+        m.value += "+" + std::string(b.begin(), b.end()); return true;
+    }
+    static std::string EnrichUrl(uint32_t, const Meta&) { return ""; }
+    static bool ParseEnrich(const std::vector<char>&, Meta&) { return false; }
+    static const char* FileName() { return ""; }
+    static nlohmann::json ToJson(const Meta& m) { return m.value; }
+    static void FromJson(const nlohmann::json& j, Meta& m) { if (j.is_string()) m.value = j.get<std::string>(); }
+};
+static void test_async_resolve_deps() {
+    using R = Decoder::AsyncResolver<DepsTraits>;
+    R res;
+    res.Initialize("", [](const std::string& url, std::vector<char>& out) {
+        std::string s = (url.rfind("dep://",0)==0) ? "DEP" : "OK"; out.assign(s.begin(), s.end()); return true;
+    });
+    using GS = Decoder::GetState; FakeMeta m;
+    CHECK(res.Get(7, m) == GS::Pending);
+    std::vector<std::pair<uint32_t,bool>> done;
+    for (int i=0;i<200 && done.empty();++i){ res.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(done.size()==1 && done[0].second==true);
+    CHECK(res.Get(7, m) == GS::Warm);
+    CHECK(m.value == "OK+DEP");          // ResolveDeps ran before warm + before completion
+    res.Shutdown();
+}
 
 static void test_async_state_machine() {
     using R = Decoder::AsyncResolver<FakeTraits>;
@@ -694,6 +727,7 @@ int main() {
     test_offline_build_label();
     test_offline_waypoint();
     test_async_state_machine();
+    test_async_resolve_deps();
     test_item_parse();
     test_item_rarity_values();
     test_item_rarity_cache_compat();

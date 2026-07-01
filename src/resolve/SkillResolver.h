@@ -22,7 +22,7 @@ struct SkillTraits {
     // already carries one, e.g. wiki-fallback skills). "" = nothing to enrich.
     static std::string EnrichUrl(uint32_t id, const Meta& m);
     static bool ParseEnrich(const std::vector<char>& body, Meta& out);
-    static const char* FileName() { return "skillinfo_v2.json"; }   // v2: + defiance enrichment; old shape re-resolved on demand
+    static const char* FileName() { return "skillinfo_v3.json"; }   // v3: Recharge fact reads "value" (was bare "Recharge"); old shape re-resolved on demand
     static nlohmann::json ToJson(const Meta& m);
     static void FromJson(const nlohmann::json& j, Meta& m);
 };

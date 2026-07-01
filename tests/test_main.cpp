@@ -370,14 +370,18 @@ static void test_skill_parse() {
     const char* json = R"({"name":"Fireball","icon":"https://x/fb.png",
         "description":"Lob a fireball.","facts":[
           {"type":"Range","text":"Range","value":1200},
-          {"type":"Damage","text":"Damage","hit_count":3}]})";
+          {"type":"Damage","text":"Damage","hit_count":3},
+          {"type":"Recharge","text":"Recharge","value":30},
+          {"type":"Time","text":"Duration","duration":9}]})";
     Decoder::SkillMeta m;
     CHECK(Decoder::SkillTraits::Parse(Bytes(json), m));
     CHECK(m.name == "Fireball");
     CHECK(m.description == "Lob a fireball.");
-    CHECK(m.facts.size() == 2);
+    CHECK(m.facts.size() == 4);
     CHECK(m.facts[0].text == "Range: 1200");
     CHECK(m.facts[1].text == "Damage (x3)");
+    CHECK(m.facts[2].text == "Recharge: 30s");   // reads "value", not "duration"
+    CHECK(m.facts[3].text == "Duration: 9s");     // Time facts still read "duration"
 }
 
 // --- Wiki skill-name fallback -------------------------------------------------
@@ -474,7 +478,7 @@ static const char* kDefiance5492 = R"DEF({"query":{"results":{"Fire Attunement":
 
 // API-resolved skill with a breakbar gains the "Defiance Break: N" line the API lacks.
 static void test_skill_enrich_defiance() {
-    CHECK(std::strcmp(Decoder::SkillTraits::FileName(), "skillinfo_v2.json") == 0);  // old cache re-resolved
+    CHECK(std::strcmp(Decoder::SkillTraits::FileName(), "skillinfo_v3.json") == 0);  // old cache re-resolved
     Decoder::SkillMeta m; m.name = "Overcharged Shot";
     CHECK(Decoder::SkillTraits::ParseEnrich(Bytes(kDefiance6154), m));
     CHECK(FactsHave(m, "Defiance Break: 232"));   // the stray "332" sic-note is ignored

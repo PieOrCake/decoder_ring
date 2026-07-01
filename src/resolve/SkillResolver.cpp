@@ -18,7 +18,8 @@ std::string FormatFact(const nlohmann::json& f) {
         std::string v = NumStr(f,"value"); if (v.empty()) v = NumStr(f,"distance");
         return v.empty()?text:(text+": "+v); }
     if (type=="Percent") { std::string v=NumStr(f,"percent"); return v.empty()?text:(text+": "+v+"%"); }
-    if (type=="Time"||type=="Duration"||type=="Recharge") { std::string v=NumStr(f,"duration"); return v.empty()?text:(text+": "+v+"s"); }
+    if (type=="Time"||type=="Duration") { std::string v=NumStr(f,"duration"); return v.empty()?text:(text+": "+v+"s"); }
+    if (type=="Recharge") { std::string v=NumStr(f,"value"); return v.empty()?text:(text+": "+v+"s"); }  // API stores cooldown in "value", not "duration"
     if (type=="Damage") { std::string hc=NumStr(f,"hit_count"); return hc.empty()?text:(text+" (x"+hc+")"); }
     if (type=="ComboField") { std::string v=f.value("field_type",std::string()); return v.empty()?text:(text+": "+v); }
     if (type=="ComboFinisher") { std::string v=f.value("finisher_type",std::string()); return v.empty()?text:(text+": "+v); }

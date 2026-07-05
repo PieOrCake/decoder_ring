@@ -177,7 +177,11 @@ DecoderStatus DecoderService::QueryPrice(uint32_t itemId, DecoderPrice& out) {
 
 void DecoderService::Tick() {
     if (!m_p) return;
-    for (auto& kv : m_p->byLang) m_p->DrainSet(*kv.second);
+    // Snapshot language sets before draining to avoid iterator invalidation on reentrant byLang insertion.
+    std::vector<Impl::LangSet*> sets;
+    sets.reserve(m_p->byLang.size());
+    for (auto& kv : m_p->byLang) sets.push_back(kv.second.get());
+    for (auto* s : sets) m_p->DrainSet(*s);
     // Price completions don't carry a durable record; consumers re-query QueryPrice.
     std::vector<uint32_t> pdone; m_p->price.DrainCompleted(pdone);
 }

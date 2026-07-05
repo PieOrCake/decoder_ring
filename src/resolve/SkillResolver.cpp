@@ -86,7 +86,7 @@ int ParseDefiance(const std::string& blob) {
 }
 }
 
-bool SkillTraits::Parse(const std::vector<char>& body, Meta& out) {
+bool SkillTraits::Parse(const std::vector<char>& body, Meta& out, const std::string& lang) {
     try {
         auto j = nlohmann::json::parse(body.begin(), body.end());
         if (!j.is_object() || !j.contains("name")) return false;
@@ -122,7 +122,7 @@ void SkillTraits::FromJson(const nlohmann::json& j, Meta& m) {
             if (!sf.text.empty()) m.facts.push_back(std::move(sf)); }
 }
 
-std::string SkillTraits::FallbackUrl(uint32_t id) {
+std::string SkillTraits::FallbackUrl(uint32_t id, const std::string& lang) {
     // [[Has context::Skill]] is ESSENTIAL — the wiki game-id space is shared across
     // object types, so a skill id can collide with an item/skin of the same id
     // (skill 63440 "Open Access" collides with item "Defender's Staff"). Without the
@@ -132,7 +132,7 @@ std::string SkillTraits::FallbackUrl(uint32_t id) {
     return "https://wiki.guildwars2.com/api.php?action=ask&query=" + UrlEncode(q) + "&format=json";
 }
 
-bool SkillTraits::ParseFallback(const std::vector<char>& body, Meta& out) {
+bool SkillTraits::ParseFallback(const std::vector<char>& body, Meta& out, const std::string& lang) {
     try {
         auto j = nlohmann::json::parse(body.begin(), body.end());
         if (!j.contains("query") || !j["query"].contains("results")) return false;
@@ -182,7 +182,7 @@ bool SkillTraits::ParseFallback(const std::vector<char>& body, Meta& out) {
     } catch (...) { return false; }
 }
 
-std::string SkillTraits::EnrichUrl(uint32_t id, const Meta& m) {
+std::string SkillTraits::EnrichUrl(uint32_t id, const Meta& m, const std::string& lang) {
     // /v2/skills has no breakbar field; the wiki does. Skip when there's no name to
     // match against, or when a defiance fact is already present (a wiki-fallback skill
     // brought it in) — that avoids a redundant fetch and any chance of doubling.
@@ -191,7 +191,7 @@ std::string SkillTraits::EnrichUrl(uint32_t id, const Meta& m) {
     return "https://wiki.guildwars2.com/api.php?action=ask&query=" + UrlEncode(q) + "&format=json";
 }
 
-bool SkillTraits::ParseEnrich(const std::vector<char>& body, Meta& out) {
+bool SkillTraits::ParseEnrich(const std::vector<char>& body, Meta& out, const std::string& lang) {
     if (HasDefianceFact(out)) return false;   // never double an existing defiance line
     try {
         auto j = nlohmann::json::parse(body.begin(), body.end());

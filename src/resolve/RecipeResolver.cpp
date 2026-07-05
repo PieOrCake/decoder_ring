@@ -40,11 +40,11 @@ bool FetchArray(const HttpFetch& fetch, const std::string& url,
 }
 }
 
-std::string RecipeTraits::Url(uint32_t id) {
+std::string RecipeTraits::Url(uint32_t id, const std::string& lang) {
     return "https://api.guildwars2.com/v2/recipes/" + std::to_string(id);
 }
 
-bool RecipeTraits::Parse(const std::vector<char>& body, Meta& out) {
+bool RecipeTraits::Parse(const std::vector<char>& body, Meta& out, const std::string& lang) {
     try {
         auto j = nlohmann::json::parse(body.begin(), body.end());
         if (!j.is_object() || !j.contains("output_item_id")) return false;
@@ -56,7 +56,7 @@ bool RecipeTraits::Parse(const std::vector<char>& body, Meta& out) {
     } catch (...) { return false; }
 }
 
-bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch) {
+bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch, const std::string& lang) {
     std::unordered_map<uint32_t, nlohmann::json> items, guild;
     if (!FetchArray(fetch, "https://api.guildwars2.com/v2/items?ids=" + JoinIds(m.outputItemId, m.ingredients), items))
         return false;

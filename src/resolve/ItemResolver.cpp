@@ -62,7 +62,7 @@ uint8_t RarityOf(const std::string& s) {
 }
 }
 
-bool ItemTraits::Parse(const std::vector<char>& body, Meta& out) {
+bool ItemTraits::Parse(const std::vector<char>& body, Meta& out, const std::string& lang) {
     try {
         auto j = nlohmann::json::parse(body.begin(), body.end());
         if (!j.is_object() || !j.contains("name")) return false;

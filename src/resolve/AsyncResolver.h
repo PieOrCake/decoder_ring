@@ -10,6 +10,7 @@
 #include <thread>
 #include <chrono>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include <utility>
 
@@ -45,9 +46,10 @@ public:
     static void SleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
     // dir: directory for the disk cache ("" disables disk). fetch: injected HTTP.
-    void Initialize(const std::string& dir, HttpFetch fetch) {
+    void Initialize(const std::string& dir, HttpFetch fetch, const std::string& lang = "en") {
         m_Fetch = std::move(fetch);
         m_Dir = dir;
+        m_Lang = lang;
         if (!m_Dir.empty() && Traits::FileName()[0]) LoadFromDisk();
         m_Stop = false;
         m_Worker = std::thread([this]{ Run(); });
@@ -107,7 +109,10 @@ public:
     }
 
 private:
-    std::string FilePath() const { return m_Dir + "/" + Traits::FileName(); }
+    std::string FilePath() const {
+        if (m_Lang == "en" || m_Lang.empty()) return m_Dir + "/" + Traits::FileName();  // legacy path = English
+        return m_Dir + "/" + m_Lang + "/" + Traits::FileName();
+    }
 
     void LoadFromDisk() {
         std::ifstream f(FilePath());
@@ -126,6 +131,9 @@ private:
         nlohmann::json j = nlohmann::json::object();
         { std::lock_guard<std::mutex> lk(m_Mtx);
           for (auto& kv : m_Items) j[std::to_string(kv.first)] = Traits::ToJson(kv.second); }
+        if (!(m_Lang == "en" || m_Lang.empty())) {
+            std::error_code ec; std::filesystem::create_directories(m_Dir + "/" + m_Lang, ec);
+        }
         std::ofstream f(FilePath(), std::ios::trunc);
         if (f) f << j.dump();
     }
@@ -138,24 +146,24 @@ private:
               if (m_Stop.load()) return;
               id = m_Queue.back(); m_Queue.pop_back(); }
             std::vector<char> body; Meta meta;
-            bool ok = m_Fetch && m_Fetch(Traits::Url(id), body) && Traits::Parse(body, meta);
+            bool ok = m_Fetch && m_Fetch(Traits::Url(id, m_Lang), body) && Traits::Parse(body, meta, m_Lang);
             if (!ok && m_Fetch) {
                 // Primary source missed; try the Traits' optional fallback source (only
                 // SkillTraits opts in — others return "" and are skipped). One extra
                 // fetch+parse, attempted only on a miss, never on the warm/success path.
-                std::string furl = Traits::FallbackUrl(id);
+                std::string furl = Traits::FallbackUrl(id, m_Lang);
                 if (!furl.empty()) {
                     std::vector<char> fbody; meta = Meta{};
-                    ok = m_Fetch(furl, fbody) && Traits::ParseFallback(fbody, meta);
+                    ok = m_Fetch(furl, fbody) && Traits::ParseFallback(fbody, meta, m_Lang);
                 }
             }
             // Dependent fetches (only RecipeTraits opts in; others return true no-op).
             // Runs on the worker, before the completion is enqueued, so a resolver that
             // must fetch derived ids (recipe -> output/ingredient items) emits exactly
             // ONE fully-composed completion. A dependency failure fails the whole resolve.
-            if (ok && m_Fetch) ok = Traits::ResolveDeps(meta, m_Fetch);
+            if (ok && m_Fetch) ok = Traits::ResolveDeps(meta, m_Fetch, m_Lang);
             // Decide on enrichment BEFORE we move meta (EnrichUrl reads it).
-            std::string eurl = (ok && m_Fetch) ? Traits::EnrichUrl(id, meta) : std::string();
+            std::string eurl = (ok && m_Fetch) ? Traits::EnrichUrl(id, meta, m_Lang) : std::string();
             {
                 std::lock_guard<std::mutex> lk(m_Mtx);
                 m_Pending.erase(id);
@@ -174,7 +182,7 @@ private:
             // record and emit a SECOND completion so consumers re-render with the new fact.
             if (!eurl.empty() && !m_Stop.load()) {
                 std::vector<char> ebody;
-                if (m_Fetch(eurl, ebody) && Traits::ParseEnrich(ebody, meta)) {
+                if (m_Fetch(eurl, ebody) && Traits::ParseEnrich(ebody, meta, m_Lang)) {
                     std::lock_guard<std::mutex> lk(m_Mtx);
                     m_Items[id] = std::move(meta);
                     m_Dirty = true;
@@ -186,6 +194,7 @@ private:
 
     HttpFetch m_Fetch;
     std::string m_Dir;
+    std::string m_Lang{"en"};
     std::unordered_map<uint32_t, Meta> m_Items;
     std::unordered_set<uint32_t> m_Pending;
     std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> m_Fail;

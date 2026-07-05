@@ -14,7 +14,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <thread>
 #include <type_traits>
 
@@ -71,16 +73,16 @@ static void test_offline_waypoint() {
 struct FakeMeta { std::string value; };
 struct FakeTraits {
     using Meta = FakeMeta;
-    static std::string Url(uint32_t id) { return "fake://" + std::to_string(id); }
-    static bool Parse(const std::vector<char>& body, Meta& m) {
+    static std::string Url(uint32_t id, const std::string& = "en") { return "fake://" + std::to_string(id); }
+    static bool Parse(const std::vector<char>& body, Meta& m, const std::string& = "en") {
         m.value.assign(body.begin(), body.end());
         return !m.value.empty();
     }
-    static std::string FallbackUrl(uint32_t) { return ""; }                  // no fallback source
-    static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
-    static bool ResolveDeps(Meta&, const Decoder::HttpFetch&) { return true; } // no dependent fetches
-    static std::string EnrichUrl(uint32_t, const Meta&) { return ""; }       // no enrichment
-    static bool ParseEnrich(const std::vector<char>&, Meta&) { return false; }
+    static std::string FallbackUrl(uint32_t, const std::string& = "en") { return ""; }                  // no fallback source
+    static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
+    static bool ResolveDeps(Meta&, const Decoder::HttpFetch&, const std::string& = "en") { return true; } // no dependent fetches
+    static std::string EnrichUrl(uint32_t, const Meta&, const std::string& = "en") { return ""; }       // no enrichment
+    static bool ParseEnrich(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
     // No disk in this test.
     static const char* FileName() { return ""; }
     static nlohmann::json ToJson(const Meta& m) { return m.value; }
@@ -89,16 +91,16 @@ struct FakeTraits {
 
 struct DepsTraits {
     using Meta = FakeMeta;
-    static std::string Url(uint32_t id) { return "fake://" + std::to_string(id); }
-    static bool Parse(const std::vector<char>& body, Meta& m) { m.value.assign(body.begin(), body.end()); return !m.value.empty(); }
-    static std::string FallbackUrl(uint32_t) { return ""; }
-    static bool ParseFallback(const std::vector<char>&, Meta&) { return false; }
-    static bool ResolveDeps(Meta& m, const Decoder::HttpFetch& fetch) {
+    static std::string Url(uint32_t id, const std::string& = "en") { return "fake://" + std::to_string(id); }
+    static bool Parse(const std::vector<char>& body, Meta& m, const std::string& = "en") { m.value.assign(body.begin(), body.end()); return !m.value.empty(); }
+    static std::string FallbackUrl(uint32_t, const std::string& = "en") { return ""; }
+    static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
+    static bool ResolveDeps(Meta& m, const Decoder::HttpFetch& fetch, const std::string&) {
         std::vector<char> b; if (!fetch("dep://x", b)) return false;
         m.value += "+" + std::string(b.begin(), b.end()); return true;
     }
-    static std::string EnrichUrl(uint32_t, const Meta&) { return ""; }
-    static bool ParseEnrich(const std::vector<char>&, Meta&) { return false; }
+    static std::string EnrichUrl(uint32_t, const Meta&, const std::string& = "en") { return ""; }
+    static bool ParseEnrich(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
     static const char* FileName() { return ""; }
     static nlohmann::json ToJson(const Meta& m) { return m.value; }
     static void FromJson(const nlohmann::json& j, Meta& m) { if (j.is_string()) m.value = j.get<std::string>(); }
@@ -856,6 +858,48 @@ static void test_labels_english_anchor() {
     CHECK(Label("Defense", "zz") == "Defense");   // unknown language -> English column
 }
 
+// A disk-backed fake to prove AsyncResolver namespaces by language.
+struct LangDiskTraits {
+    using Meta = FakeMeta;
+    static std::string Url(uint32_t id, const std::string& lang) { return "fake://" + lang + "/" + std::to_string(id); }
+    static bool Parse(const std::vector<char>& body, Meta& m, const std::string& = "en") { m.value.assign(body.begin(), body.end()); return !m.value.empty(); }
+    static std::string FallbackUrl(uint32_t, const std::string&) { return ""; }
+    static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
+    static bool ResolveDeps(Meta&, const Decoder::HttpFetch&, const std::string&) { return true; }
+    static std::string EnrichUrl(uint32_t, const Meta&, const std::string&) { return ""; }
+    static bool ParseEnrich(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
+    static const char* FileName() { return "langtest_v1.json"; }
+    static nlohmann::json ToJson(const Meta& m) { return m.value; }
+    static void FromJson(const nlohmann::json& j, Meta& m) { if (j.is_string()) m.value = j.get<std::string>(); }
+};
+static void test_async_language_namespacing() {
+    using R = Decoder::AsyncResolver<LangDiskTraits>;
+    const std::string dir = "./build-langtest";
+    std::system("rm -rf ./build-langtest && mkdir -p ./build-langtest");
+    auto fetch = [](const std::string& url, std::vector<char>& out){ out.assign(url.begin(), url.end()); return true; };
+    using GS = Decoder::GetState; FakeMeta m;
+
+    // en instance resolves id 5; de instance for the SAME id must NOT be warm.
+    R en; en.Initialize(dir, fetch, "en");
+    CHECK(en.Get(5, m) == GS::Pending);
+    std::vector<std::pair<uint32_t,bool>> done;
+    for (int i=0;i<200 && done.empty();++i){ en.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(en.Get(5, m) == GS::Warm);
+    CHECK(m.value == "fake://en/5");            // en instance fetched the en URL
+
+    R de; de.Initialize(dir, fetch, "de");
+    CHECK(de.Get(5, m) == GS::Pending);         // de cache is independent -> cold
+    done.clear();
+    for (int i=0;i<200 && done.empty();++i){ de.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(de.Get(5, m) == GS::Warm);
+    CHECK(m.value == "fake://de/5");            // de instance fetched the de URL
+    en.Shutdown(); de.Shutdown();
+
+    // en writes the legacy root path; de writes a per-language subdir.
+    CHECK(std::ifstream(dir + "/langtest_v1.json").good());
+    CHECK(std::ifstream(dir + "/de/langtest_v1.json").good());
+}
+
 static void test_map_nexus_to_api() {
     using Decoder::MapNexusToApi;
     CHECK(MapNexusToApi("en") == "en");
@@ -874,6 +918,7 @@ static void test_map_nexus_to_api() {
 int main() {
     test_labels_english_anchor();
     test_map_nexus_to_api();
+    test_async_language_namespacing();
     test_price_cache();
     test_resolve_synchronous_failed_paths();
     test_terminal_outcome_invariant();

@@ -362,6 +362,26 @@ static void test_item_subtype_wording() {
     CHECK(LinesHave(ParseItemType("Speargun"), "Speargun"));
 }
 
+static void test_item_url_carries_lang() {
+    CHECK(Decoder::ItemTraits::Url(48073, "de").find("lang=de") != std::string::npos);
+    CHECK(Decoder::ItemTraits::Url(48073, "en").find("lang=en") != std::string::npos);
+}
+
+// German parse: DR-authored labels localize; the API-provided name is used verbatim.
+static void test_item_parse_localized_lines() {
+    // Same shape as kItemArmor but with a German name (as /v2?lang=de would return).
+    const char* de = R"ITEM({"name":"Zojjas Brustpanzer","type":"Armor","level":80,"rarity":"Ascended",
+        "details":{"type":"Coat","weight_class":"Heavy","defense":381,
+        "infix_upgrade":{"attributes":[{"attribute":"CritDamage","modifier":101}]}}})ITEM";
+    Decoder::ItemMeta m;
+    CHECK(Decoder::ItemTraits::Parse(Bytes(de), m, "de"));
+    CHECK(m.name == "Zojjas Brustpanzer");             // API name, verbatim
+    CHECK(LinesHave(m, "Verteidigung: 381"));          // Defense label localized
+    CHECK(LinesHave(m, "+101 Wildheit"));              // CritDamage -> Ferocity -> Wildheit
+    CHECK(LinesHave(m, "Schwere Rüstung"));            // weight class localized
+    CHECK(LinesHave(m, "Benötigte Stufe: 80"));        // Required Level localized
+}
+
 static void test_skin_parse() {
     const char* json = R"({"name":"Mistforged Hero's","icon":"https://x/skin.png"})";
     Decoder::SkinMeta m;
@@ -939,6 +959,8 @@ int main() {
     test_item_cache_roundtrip_v3();
     test_service_item_tooltip();
     test_item_subtype_wording();
+    test_item_url_carries_lang();
+    test_item_parse_localized_lines();
     test_skin_parse();
     test_skill_parse();
     test_skill_fallback_collision();

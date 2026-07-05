@@ -9,6 +9,7 @@
 #include "resolve/RecipeResolver.h"
 #include "resolve/PriceCache.h"
 #include "resolve/DecoderService.h"
+#include "resolve/Language.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -828,7 +829,23 @@ static void test_service_teardown_awaits_inflight_fetch() {
     CHECK(svc.Resolve(LINK_ITEM, 99, r) == DR_Failed);
 }
 
+static void test_map_nexus_to_api() {
+    using Decoder::MapNexusToApi;
+    CHECK(MapNexusToApi("en") == "en");
+    CHECK(MapNexusToApi("de") == "de");
+    CHECK(MapNexusToApi("fr") == "fr");
+    CHECK(MapNexusToApi("es") == "es");
+    CHECK(MapNexusToApi("cz") == "en");   // supported by Nexus, not by us -> English
+    CHECK(MapNexusToApi("it") == "en");
+    CHECK(MapNexusToApi("cn") == "en");   // Chinese explicitly out
+    CHECK(MapNexusToApi("DE") == "de");   // case-insensitive
+    CHECK(MapNexusToApi("de-DE") == "de");// tolerate a region suffix
+    CHECK(MapNexusToApi("") == "en");
+    CHECK(MapNexusToApi(nullptr) == "en");
+}
+
 int main() {
+    test_map_nexus_to_api();
     test_price_cache();
     test_resolve_synchronous_failed_paths();
     test_terminal_outcome_invariant();

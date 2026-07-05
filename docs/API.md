@@ -256,6 +256,10 @@ the new language's cache or re-fetches from the `/v2` API.
   (label read from the Label table) and preserved.
 - **Rare item subtype/slot names** (e.g., `"Coat"`, `"Greatsword"`, `"Unused Infusion Slot"`) that
   are not yet in the Label table fall back to English until added.
+- **German/French/Spanish label translations** for DR-composed tooltip lines (stat labels, "Recipe:",
+  rarity words, etc.) are currently provisional and pending verification against the localized wikis
+  and in-game client; unverified terms fall back to English. Names and descriptions from the live API
+  are unaffected.
 
 ---
 

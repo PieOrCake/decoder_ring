@@ -5,6 +5,9 @@
 #include "resolve/Language.h"
 #include <windows.h>
 #include <string>
+#include "imgui.h"
+#include "nlohmann/json.hpp"
+#include <fstream>
 
 // One display-name constant so the addon is trivial to rename.
 static constexpr const char* DR_DISPLAY_NAME = "Decoder Ring";
@@ -49,6 +52,10 @@ static void OnPing(void*) {
 static constexpr const char* DR_LANG_SENTINEL = "DR_ActiveLanguageProbe";
 static std::string g_lastApiLang;   // last language pushed to the service
 
+// "auto" follows the Nexus language (default). Otherwise a forced en/de/fr/es.
+static std::string g_langOverride = "auto";
+static std::string g_addonDir;   // captured at load, for settings persistence
+
 static void RegisterLanguageSentinels() {
     if (!APIDefs || !APIDefs->Localization_Set) return;
     APIDefs->Localization_Set(DR_LANG_SENTINEL, "en", "en");
@@ -58,10 +65,64 @@ static void RegisterLanguageSentinels() {
 }
 
 static void PollLanguage() {
+    if (g_langOverride != "auto") return;   // manual override wins over auto-detect
     if (!APIDefs || !APIDefs->Localization_Translate) return;
     const char* active = APIDefs->Localization_Translate(DR_LANG_SENTINEL);
     std::string api = Decoder::MapNexusToApi(active);   // handles the raw-identifier passthrough
     if (api != g_lastApiLang) { g_lastApiLang = api; g_service.SetLanguage(api); }
+}
+
+// Apply the current selection: a forced language wins and suppresses the poll;
+// "auto" hands control back to detection (re-read next PollLanguage).
+static void ApplyLanguageSelection() {
+    if (g_langOverride != "auto") {
+        g_service.SetLanguage(g_langOverride);
+        g_lastApiLang = g_langOverride;   // keep the poll's cache consistent
+    } else {
+        g_lastApiLang.clear();            // force PollLanguage to re-detect + apply next frame
+    }
+}
+
+// --- Settings persistence (just the language override) ---
+static std::string SettingsPath() { return g_addonDir + "/settings.json"; }
+
+static void LoadSettings() {
+    try {
+        std::ifstream f(SettingsPath());
+        if (!f) return;
+        nlohmann::json j; f >> j;
+        if (j.is_object() && j.contains("language") && j["language"].is_string()) {
+            std::string v = j["language"].get<std::string>();
+            if (v=="auto"||v=="en"||v=="de"||v=="fr"||v=="es") g_langOverride = v;
+        }
+    } catch (...) {}
+}
+static void SaveSettings() {
+    try {
+        std::ofstream f(SettingsPath(), std::ios::trunc);
+        if (f) f << nlohmann::json{{"language", g_langOverride}}.dump();
+    } catch (...) {}
+}
+
+// Options panel: draws in the Nexus addon-options area (RT_OptionsRender).
+static void AddonOptions() {
+    ImGui::TextDisabled("Resolution language");
+    struct Opt { const char* label; const char* code; };
+    static const Opt kOpts[] = {
+        {"Auto (follow Nexus)", "auto"},
+        {"English",  "en"},
+        {"Deutsch",  "de"},
+        {"Français", "fr"},
+        {"Español",  "es"},
+    };
+    for (const auto& o : kOpts) {
+        if (ImGui::RadioButton(o.label, g_langOverride == o.code)) {
+            g_langOverride = o.code;
+            ApplyLanguageSelection();
+            SaveSettings();
+        }
+    }
+    ImGui::TextDisabled("Shift-click a chat link again after switching to see it re-resolved.");
 }
 
 // Render callback: draws NOTHING. Pure main-thread pump (drain completions ->
@@ -72,10 +133,9 @@ static void AddonLoad(AddonAPI_t* aApi) {
     APIDefs = aApi;
 
     const char* dir = APIDefs->Paths_GetAddonDirectory ? APIDefs->Paths_GetAddonDirectory("DecoderRing") : nullptr;
-    g_service.Initialize(dir ? dir : ".", &Decoder::WinINetFetch, &OnCompletion);
-
-    RegisterLanguageSentinels();
-    PollLanguage();   // set the initial language before the first resolve
+    g_addonDir = dir ? dir : ".";
+    LoadSettings();                       // may set g_langOverride
+    g_service.Initialize(g_addonDir, &Decoder::WinINetFetch, &OnCompletion);
 
     // Publish the exported function table in shared memory (version FIRST).
     if (APIDefs->DataLink_Share) {
@@ -87,10 +147,22 @@ static void AddonLoad(AddonAPI_t* aApi) {
         }
     }
 
-    // Render-pump (no drawing) + ready handshake (mirror AlterEgoBridge).
-    if (APIDefs->GUI_Register) APIDefs->GUI_Register(RT_Render, AddonRender);
+    // ImGui bootstrap (needed to draw in the Nexus options panel).
+    if (APIDefs->ImguiContext) {
+        ImGui::SetCurrentContext((ImGuiContext*)APIDefs->ImguiContext);
+        ImGui::SetAllocatorFunctions(
+            (void* (*)(size_t, void*))APIDefs->ImguiMalloc,
+            (void (*)(void*, void*))APIDefs->ImguiFree);
+    }
+
+    // Render-pump (no drawing) + options panel + ready handshake (mirror AlterEgoBridge).
+    if (APIDefs->GUI_Register) { APIDefs->GUI_Register(RT_Render, AddonRender); }
+    if (APIDefs->GUI_Register) { APIDefs->GUI_Register(RT_OptionsRender, AddonOptions); }
     if (APIDefs->Events_Subscribe) { APIDefs->Events_Subscribe(EV_DECODER_RING_PING, OnPing); g_subscribed = true; }
     if (APIDefs->Events_Raise) APIDefs->Events_Raise(EV_DECODER_RING_READY, nullptr);
+
+    RegisterLanguageSentinels();
+    ApplyLanguageSelection();             // apply the loaded override, or (auto) defer to detection
 }
 
 static void AddonUnload() {
@@ -107,7 +179,7 @@ static void AddonUnload() {
 
     // (3) Stop our render pump and our own subscription so nothing of ours fires
     // mid- or post-teardown.
-    if (APIDefs && APIDefs->GUI_Deregister) APIDefs->GUI_Deregister(AddonRender);
+    if (APIDefs && APIDefs->GUI_Deregister) { APIDefs->GUI_Deregister(AddonRender); APIDefs->GUI_Deregister(AddonOptions); }
     if (APIDefs && g_subscribed && APIDefs->Events_Unsubscribe)
         APIDefs->Events_Unsubscribe(EV_DECODER_RING_PING, OnPing);
     g_subscribed = false;

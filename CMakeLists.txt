@@ -49,13 +49,26 @@ set(CMAKE_CXX_FLAGS_RELEASE "-Os -DNDEBUG")
 set(CMAKE_SHARED_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc -static-libstdc++ -DWIN32_LEAN_AND_MEAN")
 
+# ImGui: must match the Nexus loader version (v1.80) so ImGuiContext ABI is compatible.
+include(FetchContent)
+FetchContent_Declare(imgui
+  GIT_REPOSITORY https://github.com/ocornut/imgui.git
+  GIT_TAG        v1.80)
+FetchContent_MakeAvailable(imgui)
+set(IMGUI_SRC_DIR ${imgui_SOURCE_DIR})
+
 add_library(DecoderRing SHARED
     src/dllmain.cpp
     src/resolve/Http_WinINet.cpp
-    ${CORE_SOURCES})
+    ${CORE_SOURCES}
+    ${IMGUI_SRC_DIR}/imgui.cpp
+    ${IMGUI_SRC_DIR}/imgui_draw.cpp
+    ${IMGUI_SRC_DIR}/imgui_tables.cpp
+    ${IMGUI_SRC_DIR}/imgui_widgets.cpp)
 set_target_properties(DecoderRing PROPERTIES SUFFIX ".dll" PREFIX ""
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+target_include_directories(DecoderRing PRIVATE ${IMGUI_SRC_DIR})
 target_link_libraries(DecoderRing wininet)
 target_link_options(DecoderRing PRIVATE -Wl,--strip-all)
 target_sources(DecoderRing PRIVATE ${CMAKE_SOURCE_DIR}/DecoderRing.def)

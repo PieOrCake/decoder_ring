@@ -2,6 +2,7 @@
 #include "DecoderRingApi.h"
 #include "resolve/DecoderService.h"
 #include "resolve/Http.h"
+#include "resolve/Language.h"
 #include <windows.h>
 #include <string>
 
@@ -40,15 +41,41 @@ static void OnPing(void*) {
     if (APIDefs && APIDefs->Events_Raise) APIDefs->Events_Raise(EV_DECODER_RING_READY, nullptr);
 }
 
+// Detect the active Nexus language. Nexus exposes no direct getter, but its
+// Localization system translates an identifier into the current active language.
+// We register a sentinel whose value in each language IS that language's code, so
+// Localization_Translate hands back "en"/"de"/"fr"/"es" when active (and the raw
+// identifier for any unsupported language -> MapNexusToApi maps that to "en").
+static constexpr const char* DR_LANG_SENTINEL = "DR_ActiveLanguageProbe";
+static std::string g_lastApiLang;   // last language pushed to the service
+
+static void RegisterLanguageSentinels() {
+    if (!APIDefs || !APIDefs->Localization_Set) return;
+    APIDefs->Localization_Set(DR_LANG_SENTINEL, "en", "en");
+    APIDefs->Localization_Set(DR_LANG_SENTINEL, "de", "de");
+    APIDefs->Localization_Set(DR_LANG_SENTINEL, "fr", "fr");
+    APIDefs->Localization_Set(DR_LANG_SENTINEL, "es", "es");
+}
+
+static void PollLanguage() {
+    if (!APIDefs || !APIDefs->Localization_Translate) return;
+    const char* active = APIDefs->Localization_Translate(DR_LANG_SENTINEL);
+    std::string api = Decoder::MapNexusToApi(active);   // handles the raw-identifier passthrough
+    if (api != g_lastApiLang) { g_lastApiLang = api; g_service.SetLanguage(api); }
+}
+
 // Render callback: draws NOTHING. Pure main-thread pump (drain completions ->
 // raise events; throttled disk flush).
-static void AddonRender() { g_service.Tick(); }
+static void AddonRender() { PollLanguage(); g_service.Tick(); }
 
 static void AddonLoad(AddonAPI_t* aApi) {
     APIDefs = aApi;
 
     const char* dir = APIDefs->Paths_GetAddonDirectory ? APIDefs->Paths_GetAddonDirectory("DecoderRing") : nullptr;
     g_service.Initialize(dir ? dir : ".", &Decoder::WinINetFetch, &OnCompletion);
+
+    RegisterLanguageSentinels();
+    PollLanguage();   // set the initial language before the first resolve
 
     // Publish the exported function table in shared memory (version FIRST).
     if (APIDefs->DataLink_Share) {

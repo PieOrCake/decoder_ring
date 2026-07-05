@@ -22,7 +22,7 @@ const std::unordered_map<std::string, Row>& Table() {
         {"Vitality",        {{"en","Vitality"},         {"de","Vitalität"},      {"fr","Vitalité"},           {"es","Vitalidad"}}},
         {"CritDamage",      {{"en","Ferocity"},         {"de","Wildheit"},       {"fr","Férocité"},           {"es","Ferocidad"}}},
         {"ConditionDamage", {{"en","Condition Damage"}, {"de","Zustandsschaden"},{"fr","Dégâts d'altération"},{"es","Daño de condición"}}},
-        {"ConditionDuration",{{"en","Expertise"},       {"de","Kompetenz"},      {"fr","Expertise"},          {"es","Competencia"}}},
+        {"ConditionDuration",{{"en","Expertise"},                                {"fr","Expertise"},          {"es","Competencia"}}},   // de dropped: "Kompetenz" unverified -> English fallback
         {"BoonDuration",    {{"en","Concentration"},    {"de","Konzentration"},  {"fr","Concentration"},      {"es","Concentración"}}},
         {"Healing",         {{"en","Healing Power"},    {"de","Heilkraft"},      {"fr","Guérison"},           {"es","Poder de sanación"}}},
         {"AgonyResistance", {{"en","Agony Resistance"}, {"de","Qual-Widerstand"},{"fr","Résistance à l'agonie"},{"es","Resistencia a la agonía"}}},
@@ -30,7 +30,7 @@ const std::unordered_map<std::string, Row>& Table() {
         {"Heavy",    {{"en","Heavy Armor"},    {"de","Schwere Rüstung"},   {"fr","Armure lourde"},   {"es","Armadura pesada"}}},
         {"Medium",   {{"en","Medium Armor"},   {"de","Mittlere Rüstung"},  {"fr","Armure intermédiaire"},{"es","Armadura media"}}},
         {"Light",    {{"en","Light Armor"},    {"de","Leichte Rüstung"},   {"fr","Armure légère"},   {"es","Armadura ligera"}}},
-        {"Clothing", {{"en","Clothing Armor"}, {"de","Kleidung Armor"},    {"fr","Vêtement Armor"},  {"es","Ropa Armor"}}},
+        {"Clothing", {{"en","Clothing Armor"}}},   // non-en dropped: placeholder wording unverified -> English fallback
         // --- rarity words (/v2 rarity -> display), for the recipe "(Rarity)" suffix ---
         {"Junk",       {{"en","Junk"},       {"de","Ramsch"},      {"fr","Camelote"},   {"es","Basura"}}},
         {"Basic",      {{"en","Basic"},      {"de","Einfach"},     {"fr","Basique"},    {"es","Básico"}}},

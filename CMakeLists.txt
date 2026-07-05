@@ -30,7 +30,8 @@ set(CORE_SOURCES
     src/resolve/OfflineResolve.cpp
     src/resolve/RecordFill.cpp
     src/resolve/DecoderService.cpp
-    src/resolve/Language.cpp)
+    src/resolve/Language.cpp
+    src/resolve/Labels.cpp)
 
 if(DECODER_TESTS_ONLY)
     add_executable(decoder_tests tests/test_main.cpp ${CORE_SOURCES})

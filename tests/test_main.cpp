@@ -10,6 +10,7 @@
 #include "resolve/PriceCache.h"
 #include "resolve/DecoderService.h"
 #include "resolve/Language.h"
+#include "resolve/Labels.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -829,6 +830,32 @@ static void test_service_teardown_awaits_inflight_fetch() {
     CHECK(svc.Resolve(LINK_ITEM, 99, r) == DR_Failed);
 }
 
+static void test_labels_english_anchor() {
+    using Decoder::Label;
+    // English column MUST reproduce today's emitted strings exactly.
+    CHECK(Label("Defense", "en") == "Defense");
+    CHECK(Label("WeaponStrength", "en") == "Weapon Strength");
+    CHECK(Label("RequiredLevel", "en") == "Required Level");
+    CHECK(Label("RequiredRating", "en") == "Required Rating");
+    CHECK(Label("Recipe", "en") == "Recipe");
+    CHECK(Label("DefianceBreak", "en") == "Defiance Break");
+    CHECK(Label("UnusedInfusionSlot", "en") == "Unused Infusion Slot");
+    // Attribute API-key -> display, English (replaces the old AttrName()).
+    CHECK(Label("CritDamage", "en") == "Ferocity");
+    CHECK(Label("ConditionDamage", "en") == "Condition Damage");
+    CHECK(Label("Power", "en") == "Power");
+    // Weight-class phrase, English (preserves today's "Heavy Armor" wording).
+    CHECK(Label("Heavy", "en") == "Heavy Armor");
+    // Rarity words for the recipe suffix.
+    CHECK(Label("Legendary", "en") == "Legendary");
+    // Unknown key -> returned verbatim (used for free-form subtypes like "Coat").
+    CHECK(Label("Coat", "en") == "Coat");
+    CHECK(Label("Trident", "de") == "Trident");   // no translation yet -> passthrough
+    // A populated non-English entry resolves; an absent one falls back to English.
+    CHECK(Label("Power", "de") == "Kraft");       // sourced German attribute name
+    CHECK(Label("Defense", "zz") == "Defense");   // unknown language -> English column
+}
+
 static void test_map_nexus_to_api() {
     using Decoder::MapNexusToApi;
     CHECK(MapNexusToApi("en") == "en");
@@ -845,6 +872,7 @@ static void test_map_nexus_to_api() {
 }
 
 int main() {
+    test_labels_english_anchor();
     test_map_nexus_to_api();
     test_price_cache();
     test_resolve_synchronous_failed_paths();

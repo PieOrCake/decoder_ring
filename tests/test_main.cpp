@@ -719,6 +719,43 @@ static void test_service_recipe_endtoend() {
     svc.Shutdown();
 }
 
+// Switching language re-resolves from the correct language's cache and never serves
+// the warm English entry for a non-English request.
+static void test_service_language_switch() {
+    using namespace PieUI::ChatLinks;
+    std::vector<DecoderRecord> events;
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string& url, std::vector<char>& out){
+            // Return a name that encodes the requested language so we can assert routing.
+            std::string lang = url.find("lang=de") != std::string::npos ? "de" : "en";
+            std::string j = R"({"name":"NAME-)" + lang + R"(","icon":"i","rarity":"Rare"})";
+            out.assign(j.begin(), j.end()); return true;
+        },
+        [&](const DecoderRecord& r){ events.push_back(r); });
+
+    DecoderRecord r;
+    // English resolve.
+    CHECK(svc.Resolve(LINK_ITEM, 5, r) == DR_NotReady);
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(svc.Resolve(LINK_ITEM, 5, r) == DR_Resolved);
+    CHECK(std::strcmp(r.name, "NAME-en") == 0);
+
+    // Switch to German: the SAME id must be cold (de cache empty) and resolve to the de name.
+    svc.SetLanguage("de");
+    events.clear();
+    CHECK(svc.Resolve(LINK_ITEM, 5, r) == DR_NotReady);        // not served from the warm en entry
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(svc.Resolve(LINK_ITEM, 5, r) == DR_Resolved);
+    CHECK(std::strcmp(r.name, "NAME-de") == 0);
+
+    // Switching back to English serves the original warm entry with no new fetch.
+    svc.SetLanguage("en");
+    CHECK(svc.Resolve(LINK_ITEM, 5, r) == DR_Resolved);
+    CHECK(std::strcmp(r.name, "NAME-en") == 0);
+    svc.Shutdown();
+}
+
 static void test_service_end_to_end() {
     using namespace PieUI::ChatLinks;
     std::vector<DecoderRecord> events;       // captured completion sink
@@ -1020,6 +1057,7 @@ int main() {
     test_recipe_json_roundtrip();
     test_recipe_localized();
     test_service_recipe_endtoend();
+    test_service_language_switch();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

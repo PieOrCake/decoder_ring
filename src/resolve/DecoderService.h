@@ -37,6 +37,10 @@ public:
     // For tests: bypass the fail cooldown so a retry fires immediately.
     void SetFailCooldownSec(int s);
 
+    // Sets the active language for subsequent Resolve() calls. Main-thread only
+    // (same thread as Resolve/Tick). Lazily creates that language's resolver set.
+    void SetLanguage(const std::string& apiLang);
+
 private:
     struct Impl; Impl* m_p = nullptr;
 };

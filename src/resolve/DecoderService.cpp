@@ -12,6 +12,8 @@
 #include <utility>
 #include <thread>
 #include <chrono>
+#include <unordered_map>
+#include <memory>
 
 namespace Decoder {
 using namespace PieUI::ChatLinks;
@@ -19,12 +21,30 @@ using namespace PieUI::ChatLinks;
 void DecoderService::SleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
 struct DecoderService::Impl {
-    AsyncResolver<ItemTraits>  item;
-    AsyncResolver<SkinTraits>  skin;
-    AsyncResolver<SkillTraits>   skill;
-    AsyncResolver<RecipeTraits>  recipe;
-    PriceCache                   price;
-    CompletionSink             sink;
+    struct LangSet {
+        AsyncResolver<ItemTraits>   item;
+        AsyncResolver<SkinTraits>   skin;
+        AsyncResolver<SkillTraits>  skill;
+        AsyncResolver<RecipeTraits> recipe;
+    };
+    std::string dir;
+    HttpFetch   fetch;
+    int         failCooldown = 60;
+    std::string activeLang = "en";
+    std::unordered_map<std::string, std::unique_ptr<LangSet>> byLang;
+    PriceCache      price;
+    CompletionSink  sink;
+
+    LangSet& Set(const std::string& lang) {
+        auto it = byLang.find(lang);
+        if (it != byLang.end()) return *it->second;
+        auto s = std::make_unique<LangSet>();
+        s->item.Initialize(dir, fetch, lang);   s->item.SetFailCooldownSec(failCooldown);
+        s->skin.Initialize(dir, fetch, lang);   s->skin.SetFailCooldownSec(failCooldown);
+        s->skill.Initialize(dir, fetch, lang);  s->skill.SetFailCooldownSec(failCooldown);
+        s->recipe.Initialize(dir, fetch, lang); s->recipe.SetFailCooldownSec(failCooldown);
+        auto& ref = *s; byLang[lang] = std::move(s); return ref;
+    }
 
     static void FillItem(DecoderRecord& r, const ItemMeta& m) {
         CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon);
@@ -54,42 +74,53 @@ struct DecoderService::Impl {
         r.factCount = n;
     }
 
-    // Build a resolved record from warm meta for emission.
-    void EmitResolved(uint8_t type, uint32_t id) {
-        DecoderRecord r;
-        if (type == LINK_ITEM)       { ItemMeta m;  if (item.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillItem(r, m);  sink(r); } }
-        else if (type == LINK_SKIN)  { SkinMeta m;  if (skin.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkin(r, m);  sink(r); } }
-        else if (type == LINK_SKILL)  { SkillMeta m;  if (skill.Get(id, m)  == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillSkill(r, m);  sink(r); } }
-        else if (type == LINK_RECIPE) { RecipeMeta m; if (recipe.Get(id, m) == GetState::Warm) { InitRecord(r, type, id, DR_Resolved); FillRecipe(r, m); sink(r); } }
+    template <typename Res, typename Fill>
+    void DrainOne(Res& res, uint8_t type, Fill fill) {
+        std::vector<std::pair<uint32_t,bool>> done; res.DrainCompleted(done);
+        for (auto& d : done) {
+            DecoderRecord r;
+            if (d.second) { typename Res::Meta m;
+                if (res.Get(d.first, m) == GetState::Warm) { InitRecord(r, type, d.first, DR_Resolved); fill(r, m); sink(r); } }
+            else { InitRecord(r, type, d.first, DR_Failed); sink(r); }
+        }
     }
-    void EmitFailed(uint8_t type, uint32_t id) {
-        DecoderRecord r; InitRecord(r, type, id, DR_Failed); sink(r);
-    }
-    template <typename Resolver>
-    void DrainResolver(Resolver& res, uint8_t type) {
-        std::vector<std::pair<uint32_t,bool>> done;
-        res.DrainCompleted(done);
-        for (auto& d : done) { if (d.second) EmitResolved(type, d.first); else EmitFailed(type, d.first); }
+    void DrainSet(LangSet& s) {
+        DrainOne(s.item,   LINK_ITEM,   [](DecoderRecord& r, const ItemMeta& m){ FillItem(r, m); });
+        DrainOne(s.skin,   LINK_SKIN,   [](DecoderRecord& r, const SkinMeta& m){ FillSkin(r, m); });
+        DrainOne(s.skill,  LINK_SKILL,  [](DecoderRecord& r, const SkillMeta& m){ FillSkill(r, m); });
+        DrainOne(s.recipe, LINK_RECIPE, [](DecoderRecord& r, const RecipeMeta& m){ FillRecipe(r, m); });
+        s.item.Tick(); s.skin.Tick(); s.skill.Tick(); s.recipe.Tick();
     }
 };
 
 void DecoderService::Initialize(const std::string& dir, HttpFetch fetch, CompletionSink sink) {
     m_p = new Impl();
-    m_p->sink = std::move(sink);
-    m_p->item.Initialize(dir, fetch);
-    m_p->skin.Initialize(dir, fetch);
-    m_p->skill.Initialize(dir, fetch);
-    m_p->recipe.Initialize(dir, fetch);
+    m_p->dir = dir; m_p->fetch = fetch; m_p->sink = std::move(sink);
     m_p->price.Initialize(fetch);
+    m_p->Set("en");   // eagerly create the default-language set
 }
 void DecoderService::Shutdown() {
     if (!m_p) return;
-    m_p->item.Shutdown(); m_p->skin.Shutdown(); m_p->skill.Shutdown(); m_p->recipe.Shutdown(); m_p->price.Shutdown();
+    for (auto& kv : m_p->byLang) {
+        kv.second->item.Shutdown(); kv.second->skin.Shutdown();
+        kv.second->skill.Shutdown(); kv.second->recipe.Shutdown();
+    }
+    m_p->price.Shutdown();
     delete m_p; m_p = nullptr;
 }
 void DecoderService::SetFailCooldownSec(int s) {
     if (!m_p) return;
-    m_p->item.SetFailCooldownSec(s); m_p->skin.SetFailCooldownSec(s); m_p->skill.SetFailCooldownSec(s); m_p->recipe.SetFailCooldownSec(s);
+    m_p->failCooldown = s;
+    for (auto& kv : m_p->byLang) {
+        kv.second->item.SetFailCooldownSec(s); kv.second->skin.SetFailCooldownSec(s);
+        kv.second->skill.SetFailCooldownSec(s); kv.second->recipe.SetFailCooldownSec(s);
+    }
+}
+
+void DecoderService::SetLanguage(const std::string& apiLang) {
+    if (!m_p) return;
+    m_p->activeLang = apiLang;
+    m_p->Set(apiLang);   // ensure the set exists so it is ready to serve
 }
 
 DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::string& chatCode, DecoderRecord& out) {
@@ -105,7 +136,7 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
     // so no request leaves this function stranded on not-ready.
     if (type == LINK_ITEM) {
         ItemMeta m;
-        switch (m_p->item.Get(id, m)) {
+        switch (m_p->Set(m_p->activeLang).item.Get(id, m)) {
             case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillItem(out, m); return DR_Resolved;
             case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
             case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
@@ -113,7 +144,7 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
     }
     if (type == LINK_SKIN) {
         SkinMeta m;
-        switch (m_p->skin.Get(id, m)) {
+        switch (m_p->Set(m_p->activeLang).skin.Get(id, m)) {
             case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillSkin(out, m); return DR_Resolved;
             case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
             case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
@@ -121,7 +152,7 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
     }
     if (type == LINK_SKILL) {
         SkillMeta m;
-        switch (m_p->skill.Get(id, m)) {
+        switch (m_p->Set(m_p->activeLang).skill.Get(id, m)) {
             case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillSkill(out, m); return DR_Resolved;
             case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
             case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
@@ -129,7 +160,7 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
     }
     if (type == LINK_RECIPE) {
         RecipeMeta m;
-        switch (m_p->recipe.Get(id, m)) {
+        switch (m_p->Set(m_p->activeLang).recipe.Get(id, m)) {
             case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillRecipe(out, m); return DR_Resolved;
             case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
             case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
@@ -146,11 +177,7 @@ DecoderStatus DecoderService::QueryPrice(uint32_t itemId, DecoderPrice& out) {
 
 void DecoderService::Tick() {
     if (!m_p) return;
-    m_p->DrainResolver(m_p->item, LINK_ITEM);
-    m_p->DrainResolver(m_p->skin, LINK_SKIN);
-    m_p->DrainResolver(m_p->skill, LINK_SKILL);
-    m_p->DrainResolver(m_p->recipe, LINK_RECIPE);
-    m_p->item.Tick(); m_p->skin.Tick(); m_p->skill.Tick(); m_p->recipe.Tick();
+    for (auto& kv : m_p->byLang) m_p->DrainSet(*kv.second);
     // Price completions don't carry a durable record; consumers re-query QueryPrice.
     std::vector<uint32_t> pdone; m_p->price.DrainCompleted(pdone);
 }

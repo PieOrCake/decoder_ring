@@ -25,6 +25,8 @@ name · volatile trading-post price (in-memory, ~5-min TTL, separate from the du
   skills) are named and described via a wiki fallback, so they resolve too.
 - **Recipes** resolve to "Recipe: \<item\>" with the full ingredient list and required crafting
   rating.
+- **Localization:** Resolves names, descriptions and tooltips in your Nexus language (English,
+  German, French, Spanish), following the Nexus language switch.
 
 **API:** Two coupled halves, both keyed by `(linkType, id)`. Call `api->Resolve()` for an
 immediate warm result; subscribe `EV_DECODER_RING_RESOLVED` for the async completion when the

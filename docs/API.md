@@ -233,6 +233,32 @@ Recipes are cached on disk (`recipeinfo_v1.json`).
 
 ---
 
+## 3.5 Localization
+
+Decoder Ring resolves metadata in your active Nexus language — English, German, French, or Spanish.
+When Nexus language is set to anything else (including Chinese), the service falls back to English.
+Consumers receive localized text with zero code changes — the record schema remains identical
+(`schemaVersion` is unchanged); only field values differ by language.
+
+**Disk cache namespacing:** Cache files are namespaced by language under `<cache_dir>/<lang>/…json`
+(e.g. `<dir>/de/iteminfo_v2.json`, `<dir>/fr/recipeinfo_v1.json`). English retains the legacy root
+path for backward compatibility (`<dir>/iteminfo_v2.json`). Pre-existing cache files written before
+language support (unkeyed, at the root) are treated as English.
+
+**Language switch:** When the Nexus language changes, the service re-resolves records and serves from
+the new language's cache or re-fetches from the `/v2` API.
+
+**Documented degradations:**
+- **Waypoint names and build/elite-spec labels** remain English in all languages (offline compiled-in
+  data, not fetched).
+- **Wiki-only skill names** (mounts, siege-turtles, transforms, `.dat`-only skills that `/v2` 404s)
+  remain English in non-English locales. However, the Defiance Break numeric value is localized
+  (label read from the Label table) and preserved.
+- **Rare item subtype/slot names** (e.g., `"Coat"`, `"Greatsword"`, `"Unused Infusion Slot"`) that
+  are not yet in the Label table fall back to English until added.
+
+---
+
 ## 4. Miss event — `EV_DECODER_RING_RESOLVED`
 
 When `Resolve` returns `DR_NotReady`, a background fetch is in flight. Subscribe

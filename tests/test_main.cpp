@@ -664,6 +664,30 @@ static void test_recipe_json_roundtrip() {
     CHECK(r.lines.size() == 3 && r.lines[1] == "3 Glob of Ectoplasm");
 }
 
+static void test_recipe_localized() {
+    // Recipe body (rating + one ingredient + equipment output), then the items batch.
+    auto fetch = [](const std::string& url, std::vector<char>& out) -> bool {
+        std::string body;
+        if (url.find("/v2/recipes/") != std::string::npos) {
+            CHECK(url.find("lang=fr") != std::string::npos);           // recipe fetch carries lang
+            body = R"({"output_item_id":100,"min_rating":75,"ingredients":[{"item_id":200,"count":3}]})";
+        } else if (url.find("/v2/items?ids=") != std::string::npos) {
+            CHECK(url.find("lang=fr") != std::string::npos);           // items batch carries lang
+            body = R"([{"id":100,"name":"Épée","type":"Weapon","rarity":"Exotic","icon":"i"},
+                       {"id":200,"name":"Lingot"}])";
+        }
+        out.assign(body.begin(), body.end()); return !body.empty();
+    };
+    Decoder::RecipeMeta m;
+    CHECK(Decoder::RecipeTraits::Parse(Bytes(R"({"output_item_id":100,"min_rating":75,"ingredients":[{"item_id":200,"count":3}]})"), m, "fr"));
+    CHECK(Decoder::RecipeTraits::ResolveDeps(m, fetch, "fr"));
+    CHECK(m.name == "Recette: Épée (Exotique)");   // "Recipe" + output name + rarity, localized
+    bool ing = false, rating = false;
+    for (auto& l : m.lines) { if (l == "3 Lingot") ing = true; if (l == "Niveau requis: 75") rating = true; }
+    CHECK(ing);        // ingredient name from the localized items batch
+    CHECK(rating);     // Required Rating localized
+}
+
 static void test_service_recipe_endtoend() {
     using namespace PieUI::ChatLinks;
     Decoder::DecoderService svc;
@@ -994,6 +1018,7 @@ int main() {
     test_recipe_parse();
     test_recipe_resolve_deps();
     test_recipe_json_roundtrip();
+    test_recipe_localized();
     test_service_recipe_endtoend();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);

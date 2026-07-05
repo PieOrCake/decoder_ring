@@ -1,4 +1,5 @@
 #include "resolve/RecipeResolver.h"
+#include "resolve/Labels.h"
 #include <unordered_map>
 
 namespace Decoder {
@@ -41,7 +42,7 @@ bool FetchArray(const HttpFetch& fetch, const std::string& url,
 }
 
 std::string RecipeTraits::Url(uint32_t id, const std::string& lang) {
-    return "https://api.guildwars2.com/v2/recipes/" + std::to_string(id);
+    return "https://api.guildwars2.com/v2/recipes/" + std::to_string(id) + "?lang=" + lang;
 }
 
 bool RecipeTraits::Parse(const std::vector<char>& body, Meta& out, const std::string& lang) {
@@ -58,7 +59,7 @@ bool RecipeTraits::Parse(const std::vector<char>& body, Meta& out, const std::st
 
 bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch, const std::string& lang) {
     std::unordered_map<uint32_t, nlohmann::json> items, guild;
-    if (!FetchArray(fetch, "https://api.guildwars2.com/v2/items?ids=" + JoinIds(m.outputItemId, m.ingredients), items))
+    if (!FetchArray(fetch, "https://api.guildwars2.com/v2/items?ids=" + JoinIds(m.outputItemId, m.ingredients) + "&lang=" + lang, items))
         return false;
     auto oit = items.find(m.outputItemId);
     if (oit == items.end()) return false;              // output must resolve
@@ -67,9 +68,9 @@ bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch, const std::strin
     if (oname.empty()) return false;
     m.icon = S(o, "icon");
 
-    std::string title = "Recipe: " + oname;
+    std::string title = Label("Recipe", lang) + ": " + oname;
     std::string otype = S(o, "type"), orar = S(o, "rarity");
-    if (IsEquipmentType(otype) && !orar.empty()) title += " (" + orar + ")";
+    if (IsEquipmentType(otype) && !orar.empty()) title += " (" + Label(orar, lang) + ")";
     m.name = title;
 
     m.lines.clear();
@@ -79,13 +80,13 @@ bool RecipeTraits::ResolveDeps(Meta& m, const HttpFetch& fetch, const std::strin
     }
     if (!m.guild.empty()) {
         std::string gids; for (auto& g : m.guild) gids += (gids.empty()?"":",") + std::to_string(g.id);
-        FetchArray(fetch, "https://api.guildwars2.com/v2/guild/upgrades?ids=" + gids, guild);  // best-effort
+        FetchArray(fetch, "https://api.guildwars2.com/v2/guild/upgrades?ids=" + gids + "&lang=" + lang, guild);  // best-effort
         for (auto& g : m.guild) {
             auto it = guild.find(g.id);
             if (it != guild.end()) m.lines.push_back(Line(g.count, S(it->second, "name")));
         }
     }
-    if (m.minRating > 0) m.lines.push_back("Required Rating: " + std::to_string(m.minRating));
+    if (m.minRating > 0) m.lines.push_back(Label("RequiredRating", lang) + ": " + std::to_string(m.minRating));
     return true;
 }
 

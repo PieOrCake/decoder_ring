@@ -1,4 +1,5 @@
 #include "resolve/SkillResolver.h"
+#include "resolve/Labels.h"
 #include <cstdio>
 #include <regex>
 
@@ -211,7 +212,7 @@ bool SkillTraits::ParseEnrich(const std::vector<char>& body, Meta& out, const st
             for (const auto& s : pr["Has skill facts"])
                 if (s.is_string()) { if (!blob.empty()) blob += '\n'; blob += s.get<std::string>(); }
             int v = ParseDefiance(blob);
-            if (v > 0) { SkillFactM sf; sf.text = "Defiance Break: " + std::to_string(v); out.facts.push_back(std::move(sf)); return true; }
+            if (v > 0) { SkillFactM sf; sf.text = Label("DefianceBreak", lang) + ": " + std::to_string(v); out.facts.push_back(std::move(sf)); return true; }
         }
         return false;
     } catch (...) { return false; }

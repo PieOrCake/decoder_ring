@@ -557,6 +557,23 @@ static void test_async_skill_enrich_path() {
     res.Shutdown();
 }
 
+static void test_skin_skill_url_lang() {
+    CHECK(Decoder::SkinTraits::Url(1, "fr").find("lang=fr") != std::string::npos);
+    CHECK(Decoder::SkillTraits::Url(1, "fr").find("lang=fr") != std::string::npos);
+}
+
+// Defiance Break stays available in a non-English locale: the number comes from the
+// English wiki (language-neutral), the label is localized.
+static void test_skill_enrich_defiance_localized() {
+    Decoder::SkillMeta m; m.name = "Overcharged Shot";
+    CHECK(Decoder::SkillTraits::ParseEnrich(Bytes(kDefiance6154), m, "de"));
+    CHECK(FactsHave(m, "Entschlossenheitsbruch: 232"));   // localized label + same number
+    // English path is unchanged.
+    Decoder::SkillMeta e; e.name = "Overcharged Shot";
+    CHECK(Decoder::SkillTraits::ParseEnrich(Bytes(kDefiance6154), e, "en"));
+    CHECK(FactsHave(e, "Defiance Break: 232"));
+}
+
 static void test_price_cache() {
     Decoder::PriceCache pc;
     pc.Initialize([](const std::string& url, std::vector<char>& out){
@@ -972,6 +989,8 @@ int main() {
     test_skill_enrich_none();
     test_skill_enrich_guard();
     test_async_skill_enrich_path();
+    test_skin_skill_url_lang();
+    test_skill_enrich_defiance_localized();
     test_recipe_parse();
     test_recipe_resolve_deps();
     test_recipe_json_roundtrip();

@@ -10,7 +10,7 @@ struct SkillFactM { std::string icon, text; };
 struct SkillMeta { std::string name, icon, description; std::vector<SkillFactM> facts; };
 struct SkillTraits {
     using Meta = SkillMeta;
-    static std::string Url(uint32_t id, const std::string& lang = "en") { return "https://api.guildwars2.com/v2/skills/" + std::to_string(id); }
+    static std::string Url(uint32_t id, const std::string& lang = "en") { return "https://api.guildwars2.com/v2/skills/" + std::to_string(id) + "?lang=" + lang; }
     static bool Parse(const std::vector<char>& body, Meta& out, const std::string& lang = "en");
     // Wiki fallback: the /v2/skills API 404s on mount/turtle/transform/etc. skills,
     // so on a primary miss AsyncResolver retries against the wiki's SMW ask API.

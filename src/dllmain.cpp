@@ -56,6 +56,24 @@ static std::string g_lastApiLang;   // last language pushed to the service
 static std::string g_langOverride = "auto";
 static std::string g_addonDir;   // captured at load, for settings persistence
 
+// Map the effective language to one of four IMMORTAL string literals (never a pointer
+// into g_lastApiLang), so there is no lifetime hazard and no per-call allocation.
+// g_lastApiLang is only ever "en"/"de"/"fr"/"es" (or empty before the first poll).
+static const char* LangLiteral(const std::string& l) {
+    if (l == "de") return "de";
+    if (l == "fr") return "fr";
+    if (l == "es") return "es";
+    return "en";   // "en", empty (pre-first-poll), or any unexpected value -> English
+}
+static const char* Api_GetActiveLanguage() { return LangLiteral(g_lastApiLang); }
+
+// Announce that the effective resolution language changed. Payload is the same
+// immortal literal GetActiveLanguage() returns (valid for the handler's duration).
+static void RaiseLanguageChanged() {
+    if (APIDefs && APIDefs->Events_Raise)
+        APIDefs->Events_Raise(EV_DECODER_RING_LANGUAGE_CHANGED, (void*)LangLiteral(g_lastApiLang));
+}
+
 static void RegisterLanguageSentinels() {
     if (!APIDefs || !APIDefs->Localization_Set) return;
     APIDefs->Localization_Set(DR_LANG_SENTINEL, "en", "en");
@@ -69,17 +87,20 @@ static void PollLanguage() {
     if (!APIDefs || !APIDefs->Localization_Translate) return;
     const char* active = APIDefs->Localization_Translate(DR_LANG_SENTINEL);
     std::string api = Decoder::MapNexusToApi(active);   // handles the raw-identifier passthrough
-    if (api != g_lastApiLang) { g_lastApiLang = api; g_service.SetLanguage(api); }
+    if (api != g_lastApiLang) { g_lastApiLang = api; g_service.SetLanguage(api); RaiseLanguageChanged(); }
 }
 
 // Apply the current selection: a forced language wins and suppresses the poll;
 // "auto" hands control back to detection (re-read next PollLanguage).
 static void ApplyLanguageSelection() {
     if (g_langOverride != "auto") {
+        bool changed = (g_lastApiLang != g_langOverride);
         g_service.SetLanguage(g_langOverride);
         g_lastApiLang = g_langOverride;   // keep the poll's cache consistent
+        if (changed) RaiseLanguageChanged();
     } else {
         g_lastApiLang.clear();            // force PollLanguage to re-detect + apply next frame
+                                          // (PollLanguage raises the change event when it lands)
     }
 }
 
@@ -144,6 +165,7 @@ static void AddonLoad(AddonAPI_t* aApi) {
             g_api->apiVersion = DECODER_RING_API_VERSION;
             g_api->Resolve = &Api_Resolve;
             g_api->QueryPrice = &Api_QueryPrice;
+            g_api->GetActiveLanguage = &Api_GetActiveLanguage;
         }
     }
 
@@ -171,7 +193,7 @@ static void AddonUnload() {
     // consumer that calls DataLink_Get after we unload gets this very struct back.
     // Left intact, its pointers would aim into unloaded code => crash on call.
     // Zeroing them makes a re-reading consumer see apiVersion 0 / null and decline.
-    if (g_api) { g_api->apiVersion = 0; g_api->Resolve = nullptr; g_api->QueryPrice = nullptr; }
+    if (g_api) { g_api->apiVersion = 0; g_api->Resolve = nullptr; g_api->QueryPrice = nullptr; g_api->GetActiveLanguage = nullptr; }
 
     // (2) Signal disappearance (mirror of the READY handshake) so subscribed
     // consumers drop any cached pointer immediately, not just on their next probe.
@@ -197,7 +219,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = DR_DISPLAY_NAME;
     AddonDef.Version.Major = 0; AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 3; AddonDef.Version.Revision = 0;
+    AddonDef.Version.Build = 4; AddonDef.Version.Revision = 0;
     AddonDef.Author = "PieOrCake.7635";
     AddonDef.Description = "Resolves GW2 chat-link IDs to metadata for other addons.";
     AddonDef.Load = AddonLoad;

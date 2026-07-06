@@ -26,7 +26,7 @@ static int g_fail = 0;
 static void test_abi_is_pod() {
     // The record crosses a DLL boundary in shared memory + event payloads, so it
     // MUST be trivially copyable with the version field first.
-    CHECK(DECODER_RING_API_VERSION == 4u);
+    CHECK(DECODER_RING_API_VERSION == 5u);
     CHECK(std::is_trivially_copyable<DecoderRecord>::value);
     CHECK(offsetof(DecoderRecord, schemaVersion) == 0);
     CHECK(std::strcmp(DECODER_RING_DATALINK, "DECODER_RING_API") == 0);

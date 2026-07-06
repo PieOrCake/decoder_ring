@@ -23,7 +23,11 @@
 //     + pre-formatted stat/meta lines) for item links, not just skills. Layout is
 //     unchanged (a capability signal only); gate item tooltips on schemaVersion>=3.
 // v4: added recipe links (0x09) support — see Recipe section below.
-#define DECODER_RING_API_VERSION   4u
+// v5: added DecoderRingApi::GetActiveLanguage() — the language DR is currently
+//     resolving names in. Layout-extending only (a trailing function pointer), so a
+//     pre-v5 consumer is unaffected and a v5 service is compatible with a v4 consumer.
+//     Gate GetActiveLanguage() calls on apiVersion >= 5.
+#define DECODER_RING_API_VERSION   5u
 // DataLink identifier the service publishes the DecoderRingApi struct under.
 #define DECODER_RING_DATALINK      "DECODER_RING_API"
 // Service announces its API is live (raised on load + in reply to a ping).
@@ -37,6 +41,10 @@
 #define EV_DECODER_RING_PING       "EV_DECODER_RING_PING"
 // A background resolution landed. Payload: DecoderRecord* (synchronous).
 #define EV_DECODER_RING_RESOLVED   "EV_DECODER_RING_RESOLVED"
+// The effective resolution language changed (auto-switch or override). Payload: a
+// const char* immortal lang literal ("en"|"de"|"fr"|"es"), valid for the duration
+// of the handler — copy out. Consumers may instead just poll GetActiveLanguage().
+#define EV_DECODER_RING_LANGUAGE_CHANGED "EV_DECODER_RING_LANGUAGE_CHANGED"
 
 // Resolution status of a record / query result.
 enum DecoderStatus : uint8_t {
@@ -135,4 +143,10 @@ struct DecoderRingApi {
     DecoderStatus (*Resolve)(uint8_t linkType, uint32_t id, const char* chatCode, DecoderRecord* out);
     // Volatile price. DR_Resolved with *out filled, or DR_NotReady (fetch kicked).
     DecoderStatus (*QueryPrice)(uint32_t itemId, DecoderPrice* out);
+    // Returns the language DR is CURRENTLY resolving names in, as a stable, immortal
+    // literal: "en" | "de" | "fr" | "es". This is the RESOLVED language — after applying
+    // the auto/override selection and the en-fallback for unsupported locales — i.e. the
+    // language item/skin/skill/recipe names actually come back in. Never null; never blocks.
+    // Added in apiVersion 5; gate calls on apiVersion >= 5.
+    const char* (*GetActiveLanguage)();
 };

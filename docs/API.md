@@ -231,6 +231,12 @@ Recipes are cached on disk (`recipeinfo_v1.json`).
 > layout is unchanged, so a pre-v4 consumer ignores recipe fields. A v4 service is fully compatible
 > with a v3 consumer; gate recipe rendering on `schemaVersion >= 4`.
 
+> **Schema/API version 5.** `DECODER_RING_API_VERSION` is now `5u`. This bump adds one trailing
+> function pointer, `GetActiveLanguage`, to the **end** of `DecoderRingApi` (see §5.5). It is a
+> **layout-extending** change: existing fields never move, so a pre-v5 consumer is unaffected (it
+> simply never reads the new pointer) and a v5 service is fully compatible with a v4 consumer. The
+> `DecoderRecord` layout is unchanged. Gate `GetActiveLanguage()` calls on `apiVersion >= 5`.
+
 ---
 
 ## 3.5 Localization
@@ -246,7 +252,10 @@ path for backward compatibility (`<dir>/iteminfo_v2.json`). Pre-existing cache f
 language support (unkeyed, at the root) are treated as English.
 
 **Language switch:** When the Nexus language changes, the service re-resolves records and serves from
-the new language's cache or re-fetches from the `/v2` API.
+the new language's cache or re-fetches from the `/v2` API. The effective language is readable at any
+time via `GetActiveLanguage()` (§5.5), and a change is announced by `EV_DECODER_RING_LANGUAGE_CHANGED`
+— useful if you produce your own text (UI chrome, or currency/achievement names DR does not resolve)
+and want to match the language DR is resolving in.
 
 **Documented degradations:**
 - **Waypoint names and build/elite-spec labels** remain English in all languages (offline compiled-in
@@ -318,6 +327,46 @@ if (decoder && decoder->QueryPrice(itemId, &price) == DR_Resolved) {
     // price.sell = lowest sell listing, copper (-1 if no listings)
     RenderPrice(price.buy, price.sell);
 }
+```
+
+---
+
+## 5.5 Active language — `GetActiveLanguage` (apiVersion ≥ 5)
+
+```cpp
+const char* (*GetActiveLanguage)();
+```
+
+Returns the language Decoder Ring is **currently resolving names in**, as a stable, immortal string
+literal: `"en"`, `"de"`, `"fr"`, or `"es"`. This is the **resolved** language — after the auto/override
+selection and the English fallback for unsupported locales — i.e. the language item/skin/skill/recipe
+names actually come back in. **Never null; never blocks.** The returned pointer is an immortal literal,
+so it is always safe to read (no per-call allocation, no lifetime concern).
+
+Use it when you produce text of your own that DR does not resolve — your addon's UI chrome, or
+currency/achievement names — and want to match the language DR is serving.
+
+```cpp
+DecoderRingApi* decoder = GetDecoder();   // re-validate every call — never cache
+if (decoder && decoder->apiVersion >= 5u && decoder->GetActiveLanguage) {
+    const char* lang = decoder->GetActiveLanguage();   // "en" | "de" | "fr" | "es"
+    LocalizeMyOwnText(lang);
+}
+```
+
+**Gate on `apiVersion >= 5`** before calling — an older service does not publish this pointer. It is
+cheap enough to poll every frame; alternatively, subscribe `EV_DECODER_RING_LANGUAGE_CHANGED` to be
+notified only when the effective language actually changes (auto-detected switch or a manual override).
+The event payload is a `const char*` — the same immortal literal `GetActiveLanguage()` returns, valid
+for the duration of the handler (copy it out if you keep it).
+
+```cpp
+static void OnLanguageChanged(void* payload) {
+    const char* lang = static_cast<const char*>(payload);   // "en" | "de" | "fr" | "es"
+    if (lang) LocalizeMyOwnText(lang);
+}
+// In AddonLoad:   APIDefs->Events_Subscribe(EV_DECODER_RING_LANGUAGE_CHANGED, OnLanguageChanged);
+// In AddonUnload: APIDefs->Events_Unsubscribe(EV_DECODER_RING_LANGUAGE_CHANGED, OnLanguageChanged);
 ```
 
 ---

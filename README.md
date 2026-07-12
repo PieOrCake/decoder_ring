@@ -23,6 +23,8 @@ name · volatile trading-post price (in-memory, ~5-min TTL, separate from the du
   slots, rune/sigil bonuses, weight, required level).
 - **Skills** that the `/v2` API doesn't have (mount, siege-turtle, transform and other `.dat`-only
   skills) are named and described via a wiki fallback, so they resolve too.
+- **Effect & buff links** that players shift-click (food/nourishment, guild & WvW boosts) are named
+  from the wiki (English), so they resolve instead of showing a bare chip.
 - **Recipes** resolve to "Recipe: \<item\>" with the full ingredient list and required crafting
   rating.
 - **Localization:** Resolves names, descriptions and tooltips in your Nexus language (English,

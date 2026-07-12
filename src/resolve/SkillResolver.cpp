@@ -133,6 +133,15 @@ std::string SkillTraits::FallbackUrl(uint32_t id, const std::string& lang) {
     return "https://wiki.guildwars2.com/api.php?action=ask&query=" + UrlEncode(q) + "&format=json";
 }
 
+std::string SkillTraits::FallbackUrl2(uint32_t id, const std::string& /*lang*/) {
+    // Same shape as FallbackUrl, only the context differs: effects/buffs are catalogued
+    // under [[Has context::Effect]], not ::Skill. English-only — the localized wikis carry
+    // ~no effect pages keyed by game id, so lang is ignored (the query stays English).
+    std::string q = "[[Has game id::" + std::to_string(id) +
+        "]][[Has context::Effect]]|?Has canonical name|?Has game description|?Has skill facts";
+    return "https://wiki.guildwars2.com/api.php?action=ask&query=" + UrlEncode(q) + "&format=json";
+}
+
 bool SkillTraits::ParseFallback(const std::vector<char>& body, Meta& out, const std::string& lang) {
     try {
         auto j = nlohmann::json::parse(body.begin(), body.end());

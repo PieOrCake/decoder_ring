@@ -31,6 +31,7 @@ enum class GetState { Warm, Pending, Failed };
 //   static std::string Url(uint32_t id);
 //   static bool Parse(const std::vector<char>& body, Meta&);
 //   static std::string FallbackUrl(uint32_t id); // "" = no fallback source
+//   static std::string FallbackUrl2(uint32_t id); // "" = no 2nd fallback (tried on FallbackUrl miss; reuses ParseFallback)
 //   static bool ParseFallback(const std::vector<char>&, Meta&);
 //   static bool ResolveDeps(Meta&, const HttpFetch&); // dependent fetches before completion; false = fail
 //   static std::string EnrichUrl(uint32_t id, const Meta&); // "" = no enrichment
@@ -155,6 +156,16 @@ private:
                 if (!furl.empty()) {
                     std::vector<char> fbody; meta = Meta{};
                     ok = m_Fetch(furl, fbody) && Traits::ParseFallback(fbody, meta, m_Lang);
+                }
+            }
+            if (!ok && m_Fetch) {
+                // Optional SECOND fallback (only SkillTraits opts in — effects/buffs sit in a
+                // different wiki context; others return "" and are skipped). Same ParseFallback,
+                // one more fetch, attempted only on a continued miss — never on the warm path.
+                std::string furl2 = Traits::FallbackUrl2(id, m_Lang);
+                if (!furl2.empty()) {
+                    std::vector<char> fbody2; meta = Meta{};
+                    ok = m_Fetch(furl2, fbody2) && Traits::ParseFallback(fbody2, meta, m_Lang);
                 }
             }
             // Dependent fetches (only RecipeTraits opts in; others return true no-op).

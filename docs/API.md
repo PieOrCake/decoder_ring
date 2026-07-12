@@ -207,6 +207,16 @@ transparent to consumers (no flag, no extra field); a skill the API can't name s
 `DR_Resolved` with its canonical name. Wiki-sourced facts are text only (`icon == ""`). A skill that
 is in neither source resolves `DR_Failed` as usual.
 
+**Effect / buff links.** The names players shift-click for buffs and effects (food/nourishment
+debuffs like *Malnourished*, guild and WvW boosts, environmental effects) are **skill links
+(`0x06`)** — Guild Wars 2 has no separate effect link type. These ids are absent from `/v2/skills`
+*and* from the wiki's skill catalogue, so after the skill fallback misses the service tries one more
+wiki query against the effect catalogue and fills `name` + `description` from there. This resolves a
+large, common set of effect links (name in English). Two known limits: it is **English-only** (the
+localized wikis carry effectively no effect pages keyed by game id — see below), and a minority of
+shift-clicked effects have **no game-id-keyed source anywhere** (e.g. WvW commander broadcasts) and
+resolve `DR_Failed`; the consumer should degrade to its own bracketed text for those.
+
 > **Schema version 3.** `DECODER_RING_API_VERSION` is now `3u`. This is a **semantic** extension only —
 > the struct layout is unchanged, so it is forward-compatible: a pre-v3 consumer ignores item
 > `description`/`facts`. Gate item-tooltip rendering on `schemaVersion >= 3`. The item disk cache was
@@ -263,6 +273,9 @@ and want to match the language DR is resolving in.
 - **Wiki-only skill names** (mounts, siege-turtles, transforms, `.dat`-only skills that `/v2` 404s)
   remain English in non-English locales. However, the Defiance Break numeric value is localized
   (label read from the Label table) and preserved.
+- **Effect / buff names** (food/nourishment, guild & WvW boosts, environmental effects — `0x06` links
+  resolved via the wiki effect catalogue) remain **English in all languages**: the localized wikis
+  carry effectively no effect pages keyed by game id, so there is no localized source to read.
 - **Rare item subtype/slot names** (e.g., `"Coat"`, `"Greatsword"`, `"Unused Infusion Slot"`) that
   are not yet in the Label table fall back to English until added.
 - **German/French/Spanish label translations** for DR-composed tooltip lines (stat labels, "Recipe:",

@@ -15,6 +15,11 @@ struct SkillTraits {
     // Wiki fallback: the /v2/skills API 404s on mount/turtle/transform/etc. skills,
     // so on a primary miss AsyncResolver retries against the wiki's SMW ask API.
     static std::string FallbackUrl(uint32_t id, const std::string& lang = "en");
+    // Second wiki fallback: effects/buffs (food nourishment, guild/WvW boosts, environment
+    // effects) are 0x06 skill links but are absent from /v2/skills AND the [[Has context::Skill]]
+    // wiki space — they live under [[Has context::Effect]]. Fired only after the primary and the
+    // Skill fallback both miss. Reuses ParseFallback (identical SMW ask JSON). English-only.
+    static std::string FallbackUrl2(uint32_t id, const std::string& lang = "en");
     static bool ParseFallback(const std::vector<char>& body, Meta& out, const std::string& lang = "en");
     static bool ResolveDeps(Meta&, const HttpFetch&, const std::string& = "en") { return true; }        // no dependent fetches
     // Secondary low-priority wiki lookup run AFTER an API resolve: the /v2 API has no

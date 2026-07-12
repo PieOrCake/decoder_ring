@@ -20,6 +20,7 @@ struct ItemTraits {
     static std::string Url(uint32_t id, const std::string& lang = "en") { return "https://api.guildwars2.com/v2/items/" + std::to_string(id) + "?lang=" + lang; }
     static bool Parse(const std::vector<char>& body, Meta& out, const std::string& lang = "en");
     static std::string FallbackUrl(uint32_t, const std::string& = "en") { return ""; }                  // no fallback source
+    static std::string FallbackUrl2(uint32_t, const std::string& = "en") { return ""; }                 // no 2nd fallback source
     static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
     static bool ResolveDeps(Meta&, const HttpFetch&, const std::string& = "en") { return true; }        // no dependent fetches
     static std::string EnrichUrl(uint32_t, const Meta&, const std::string& = "en") { return ""; }       // no enrichment

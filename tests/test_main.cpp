@@ -79,6 +79,7 @@ struct FakeTraits {
         return !m.value.empty();
     }
     static std::string FallbackUrl(uint32_t, const std::string& = "en") { return ""; }                  // no fallback source
+    static std::string FallbackUrl2(uint32_t, const std::string& = "en") { return ""; }                 // no 2nd fallback source
     static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
     static bool ResolveDeps(Meta&, const Decoder::HttpFetch&, const std::string& = "en") { return true; } // no dependent fetches
     static std::string EnrichUrl(uint32_t, const Meta&, const std::string& = "en") { return ""; }       // no enrichment
@@ -94,6 +95,7 @@ struct DepsTraits {
     static std::string Url(uint32_t id, const std::string& = "en") { return "fake://" + std::to_string(id); }
     static bool Parse(const std::vector<char>& body, Meta& m, const std::string& = "en") { m.value.assign(body.begin(), body.end()); return !m.value.empty(); }
     static std::string FallbackUrl(uint32_t, const std::string& = "en") { return ""; }
+    static std::string FallbackUrl2(uint32_t, const std::string& = "en") { return ""; }
     static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
     static bool ResolveDeps(Meta& m, const Decoder::HttpFetch& fetch, const std::string&) {
         std::vector<char> b; if (!fetch("dep://x", b)) return false;
@@ -421,6 +423,64 @@ static const char* kWiki55536 = R"WIKI({"query":{"printrequests":[{"label":"","k
 static bool FactsHave(const Decoder::SkillMeta& m, const char* want) {
     for (auto& f : m.facts) if (f.text == want) return true;
     return false;
+}
+
+// --- Effect/buff wiki fallback ([[Has context::Effect]], the SECOND fallback) --
+// Effects/buffs (food nourishment, guild/WvW boosts) are 0x06 skill links but are
+// absent from /v2/skills AND the Skill wiki space. Real captured action=ask output.
+// 46587 = Malnourished; 35126's page title is "… (effect)" yet its canonical name
+// is clean — the case proving ParseFallback names by canonical name, not page title.
+static const char* kEffect46587 = R"WIKI({"query":{"printrequests":[{"label":"","key":"","redi":"","typeid":"_wpg","mode":2},{"label":"Has canonical name","key":"Has_canonical_name","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has game description","key":"Has_game_description","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has skill facts","key":"Has_skill_facts","redi":"","typeid":"_txt","mode":1,"format":""}],"results":{"Malnourished":{"printouts":{"Has canonical name":["Malnourished"],"Has game description":["Consume a [[food]] item to regain [[nourishment]]."],"Has skill facts":[]},"fulltext":"Malnourished","fullurl":"//wiki.guildwars2.com/wiki/Malnourished","namespace":0,"exists":"1","displaytitle":""}},"serializer":"SMW\\Serializers\\QueryResultSerializer","version":2,"meta":{"hash":"b075c55eac0f95dc5fb036f415c4cf94","count":1,"offset":0,"source":"","time":"0.006097"}}})WIKI";
+
+static const char* kEffect35126 = R"WIKI({"query":{"printrequests":[{"label":"","key":"","redi":"","typeid":"_wpg","mode":2},{"label":"Has canonical name","key":"Has_canonical_name","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has game description","key":"Has_game_description","redi":"","typeid":"_txt","mode":1,"format":""},{"label":"Has skill facts","key":"Has_skill_facts","redi":"","typeid":"_txt","mode":1,"format":""}],"results":{"Guild WvW Reward Track Boost (effect)":{"printouts":{"Has canonical name":["Guild WvW Reward Track Boost"],"Has game description":["Increase [[WvW Reward Track]] gain by 3-10%"],"Has skill facts":[]},"fulltext":"Guild WvW Reward Track Boost (effect)","fullurl":"//wiki.guildwars2.com/wiki/Guild_WvW_Reward_Track_Boost_(effect)","namespace":0,"exists":"1","displaytitle":""}},"serializer":"SMW\\Serializers\\QueryResultSerializer","version":2,"meta":{"hash":"33d9099046f43101090ad38a2d16b7b4","count":1,"offset":0,"source":"","time":"0.007005"}}})WIKI";
+
+// FallbackUrl2 carries the id under the Effect context (NOT Skill).
+static void test_skill_effect_fallback_url() {
+    std::string u = Decoder::SkillTraits::FallbackUrl2(46587);
+    CHECK(u.find("46587") != std::string::npos);      // id present
+    CHECK(u.find("Effect") != std::string::npos);     // [[Has context::Effect]]
+    CHECK(u.find("Skill") == std::string::npos);      // and NOT the Skill context
+}
+
+// ParseFallback (reused verbatim) names effects by canonical name and cleans markup;
+// 35126 must be "Guild WvW Reward Track Boost", not the "… (effect)" page title.
+static void test_skill_effect_fallback_parse() {
+    Decoder::SkillMeta a;
+    CHECK(Decoder::SkillTraits::ParseFallback(Bytes(kEffect46587), a));
+    CHECK(a.name == "Malnourished");
+    CHECK(!a.description.empty());
+    CHECK(a.description.find("[[") == std::string::npos);   // wiki links cleaned
+    Decoder::SkillMeta b;
+    CHECK(Decoder::SkillTraits::ParseFallback(Bytes(kEffect35126), b));
+    CHECK(b.name == "Guild WvW Reward Track Boost");
+}
+
+// AsyncResolver wiring: /v2 misses AND the Skill wiki misses -> the Effect fallback
+// (FallbackUrl2) resolves, ending Warm with the effect's name.
+static void test_async_skill_effect_path() {
+    using R = Decoder::AsyncResolver<Decoder::SkillTraits>;
+    R res;
+    res.Initialize("", [&](const std::string& url, std::vector<char>& out){
+        if (url.find("api.guildwars2.com") != std::string::npos) {
+            const char* j = R"({"text":"no such id"})";          // /v2 404-style miss
+            out.assign(j, j + std::strlen(j)); return true;
+        }
+        if (url.find("Effect") != std::string::npos) {           // 2nd fallback (Effect)
+            out.assign(kEffect46587, kEffect46587 + std::strlen(kEffect46587)); return true;
+        }
+        const char* empty = R"({"query":{"results":[]}})";       // 1st fallback (Skill) miss
+        out.assign(empty, empty + std::strlen(empty)); return true;
+    });
+    using GS = Decoder::GetState;
+    Decoder::SkillMeta m;
+    CHECK(res.Get(46587, m) == GS::Pending);
+    std::vector<std::pair<uint32_t,bool>> done;
+    for (int i=0;i<200 && done.empty();++i){ res.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(done.size() == 1 && done[0].first == 46587);
+    CHECK(done[0].second == true);                     // resolved via the Effect fallback
+    CHECK(res.Get(46587, m) == GS::Warm);
+    CHECK(m.name == "Malnourished");
+    res.Shutdown();
 }
 
 // The collision filter: id 63440 also names item "Defender's Staff". The
@@ -962,6 +1022,7 @@ struct LangDiskTraits {
     static std::string Url(uint32_t id, const std::string& lang) { return "fake://" + lang + "/" + std::to_string(id); }
     static bool Parse(const std::vector<char>& body, Meta& m, const std::string& = "en") { m.value.assign(body.begin(), body.end()); return !m.value.empty(); }
     static std::string FallbackUrl(uint32_t, const std::string&) { return ""; }
+    static std::string FallbackUrl2(uint32_t, const std::string&) { return ""; }
     static bool ParseFallback(const std::vector<char>&, Meta&, const std::string& = "en") { return false; }
     static bool ResolveDeps(Meta&, const Decoder::HttpFetch&, const std::string&) { return true; }
     static std::string EnrichUrl(uint32_t, const Meta&, const std::string&) { return ""; }
@@ -1046,6 +1107,9 @@ int main() {
     test_skill_fallback_markup();
     test_skill_fallback_empty();
     test_async_skill_fallback_path();
+    test_skill_effect_fallback_url();
+    test_skill_effect_fallback_parse();
+    test_async_skill_effect_path();
     test_skill_enrich_defiance();
     test_skill_enrich_none();
     test_skill_enrich_guard();

@@ -219,7 +219,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = DR_DISPLAY_NAME;
     AddonDef.Version.Major = 0; AddonDef.Version.Minor = 9;
-    AddonDef.Version.Build = 4; AddonDef.Version.Revision = 0;
+    AddonDef.Version.Build = 5; AddonDef.Version.Revision = 0;
     AddonDef.Author = "PieOrCake.7635";
     AddonDef.Description = "Resolves GW2 chat-link IDs to metadata for other addons.";
     AddonDef.Load = AddonLoad;

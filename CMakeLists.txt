@@ -24,6 +24,7 @@ set(CORE_SOURCES
     src/chat/WaypointNames.cpp
     src/resolve/ItemResolver.cpp
     src/resolve/RecipeResolver.cpp
+    src/resolve/TraitResolver.cpp
     src/resolve/SkinResolver.cpp
     src/resolve/SkillResolver.cpp
     src/resolve/SkillFact.cpp

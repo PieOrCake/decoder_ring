@@ -7,6 +7,7 @@
 #include "resolve/SkinResolver.h"
 #include "resolve/SkillResolver.h"
 #include "resolve/RecipeResolver.h"
+#include "resolve/TraitResolver.h"
 #include "resolve/PriceCache.h"
 #include "resolve/DecoderService.h"
 #include "resolve/Language.h"
@@ -779,6 +780,62 @@ static void test_service_recipe_endtoend() {
     svc.Shutdown();
 }
 
+// --- Standalone trait links (0x07) -------------------------------------------
+// Real captured /v2/traits/214 (Raging Storm). Facts exercise the shared
+// formatter: Recharge (reads "value"), Distance (falls back to "distance"),
+// Buff (status + duration), Number (reads "value").
+static const char* kTrait214 = R"TR({"id":214,"name":"Raging Storm","icon":"https://render.guildwars2.com/file/74A414B378B54431EF183A37DA37CCFFFC0E04BD/2175040.png","description":"Critically striking a foe grants fury. Gain ferocity while under the effects of fury.","facts":[{"text":"Recharge","type":"Recharge","icon":"https://render.guildwars2.com/file/D767B963D120F077C3B163A05DC05A7317D7DB70/156651.png","value":8},{"type":"AttributeAdjust","icon":"https://render.guildwars2.com/file/0658D833944E69E62E08EB18A0B5407F722125BC/2229320.png","value":180,"target":"CritDamage"},{"text":"Apply Buff/Condition","type":"Buff","icon":"https://render.guildwars2.com/file/96D90DF84CAFE008233DD1C2606A12C1A0E68048/102842.png","duration":4,"status":"Fury","description":"Critical chance increased; stacks duration.","apply_count":1},{"text":"Radius","type":"Distance","icon":"https://render.guildwars2.com/file/B0CD8077991E4FB1622D2930337ED7F9B54211D5/156665.png","distance":360},{"text":"Number of Targets","type":"Number","icon":"https://render.guildwars2.com/file/BBE8191A494B0352259C10EADFDACCE177E6DA5B/1770208.png","value":5}]})TR";
+
+static bool TraitFactsHave(const Decoder::TraitMeta& m, const char* want) {
+    for (auto& f : m.facts) if (f.text == want) return true;
+    return false;
+}
+
+static void test_trait_parse() {
+    Decoder::TraitMeta m;
+    CHECK(Decoder::TraitTraits::Parse(Bytes(kTrait214), m));
+    CHECK(m.name == "Raging Storm");
+    CHECK(m.description == "Critically striking a foe grants fury. Gain ferocity while under the effects of fury.");
+    CHECK(!m.icon.empty());
+    CHECK(TraitFactsHave(m, "Recharge: 8s"));        // Recharge reads "value"
+    CHECK(TraitFactsHave(m, "Radius: 360"));         // Distance falls back to "distance"
+    CHECK(TraitFactsHave(m, "Number of Targets: 5"));
+    CHECK(TraitFactsHave(m, "Fury (4s)"));           // Buff: status + duration
+    CHECK(!m.facts.empty());
+    for (auto& f : m.facts) CHECK(!f.icon.empty());  // /v2 facts carry icons
+}
+
+static void test_trait_json_roundtrip() {
+    Decoder::TraitMeta m;
+    CHECK(Decoder::TraitTraits::Parse(Bytes(kTrait214), m));
+    auto j = Decoder::TraitTraits::ToJson(m);
+    Decoder::TraitMeta m2; Decoder::TraitTraits::FromJson(j, m2);
+    CHECK(m2.name == m.name);
+    CHECK(m2.icon == m.icon);
+    CHECK(m2.description == m.description);
+    CHECK(m2.facts.size() == m.facts.size());
+    CHECK(std::strcmp(Decoder::TraitTraits::FileName(), "traitinfo_v1.json") == 0);
+}
+
+static void test_async_trait_path() {
+    using R = Decoder::AsyncResolver<Decoder::TraitTraits>;
+    R res;
+    res.Initialize("", [&](const std::string& url, std::vector<char>& out){
+        if (url.find("/v2/traits/") == std::string::npos) return false;
+        out.assign(kTrait214, kTrait214 + std::strlen(kTrait214)); return true;
+    });
+    using GS = Decoder::GetState;
+    Decoder::TraitMeta m;
+    CHECK(res.Get(214, m) == GS::Pending);
+    std::vector<std::pair<uint32_t,bool>> done;
+    for (int i=0;i<200 && done.empty();++i){ res.DrainCompleted(done); R::SleepMs(5); }
+    CHECK(done.size() == 1 && done[0].first == 214);
+    CHECK(done[0].second == true);
+    CHECK(res.Get(214, m) == GS::Warm);
+    CHECK(m.name == "Raging Storm");
+    res.Shutdown();
+}
+
 // Switching language re-resolves from the correct language's cache and never serves
 // the warm English entry for a non-English request.
 static void test_service_language_switch() {
@@ -1121,6 +1178,9 @@ int main() {
     test_recipe_json_roundtrip();
     test_recipe_localized();
     test_service_recipe_endtoend();
+    test_trait_parse();
+    test_trait_json_roundtrip();
+    test_async_trait_path();
     test_service_language_switch();
     test_service_end_to_end();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);

@@ -160,6 +160,7 @@ recipe fields on `>= 4`).
 |---|---|---|
 | Item | `0x02` | `bound` (DecoderBound), `noSell`, `tradeable`, `vendorValue` (copper), `rarity` (DecoderRarity); **v3+** also `description[512]` + `facts[16]` (full tooltip — see below) |
 | Skill | `0x06` | `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) |
+| Trait | `0x07` | **v5+** `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) — see below |
 | Waypoint/POI | `0x04` | `mapName[96]`, `poiType` (DecoderPoiKind) |
 | Build/AE2 | `0x0D` | Spec label in `name[]`; no additional fields |
 | Skin | `0x0A` | `name[]` and `iconUrl[]` only |
@@ -216,6 +217,16 @@ large, common set of effect links (name in English). Two known limits: it is **E
 localized wikis carry effectively no effect pages keyed by game id — see below), and a minority of
 shift-clicked effects have **no game-id-keyed source anywhere** (e.g. WvW commander broadcasts) and
 resolve `DR_Failed`; the consumer should degrade to its own bracketed text for those.
+
+**Trait links (`0x07`)** — surfaced in schema version 5. Gate on `schemaVersion >= 5`.
+
+Standalone trait chat links (shift-clicking a single trait) resolve to a full tooltip record —
+`name`, `iconUrl`, `description`, and pre-formatted `facts[]` — sourced from `/v2/traits/:id` and
+localized to the active language (en/de/fr/es). No ABI change: records carry `linkType == 0x07`;
+a consumer maps that link type to "trait" in its own render switch exactly as it does for skills.
+Unknown/invalid trait ids resolve to `DR_Failed` (never persisted). Build-template links (`0x0D`)
+are unaffected — they remain a build label and do not expand individual traits. Traits are cached
+on disk (`traitinfo_v1.json`).
 
 > **Schema version 3.** `DECODER_RING_API_VERSION` is now `3u`. This is a **semantic** extension only —
 > the struct layout is unchanged, so it is forward-compatible: a pre-v3 consumer ignores item

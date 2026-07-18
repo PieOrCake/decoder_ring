@@ -26,6 +26,7 @@ set(CORE_SOURCES
     src/resolve/RecipeResolver.cpp
     src/resolve/SkinResolver.cpp
     src/resolve/SkillResolver.cpp
+    src/resolve/SkillFact.cpp
     src/resolve/PriceCache.cpp
     src/resolve/OfflineResolve.cpp
     src/resolve/RecordFill.cpp

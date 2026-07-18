@@ -160,7 +160,7 @@ recipe fields on `>= 4`).
 |---|---|---|
 | Item | `0x02` | `bound` (DecoderBound), `noSell`, `tradeable`, `vendorValue` (copper), `rarity` (DecoderRarity); **v3+** also `description[512]` + `facts[16]` (full tooltip — see below) |
 | Skill | `0x06` | `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) |
-| Trait | `0x07` | **v5+** `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) — see below |
+| Trait | `0x07` | `description[512]`, `factCount`, `facts[16]` (icon URL + pre-formatted text per fact) — see below |
 | Waypoint/POI | `0x04` | `mapName[96]`, `poiType` (DecoderPoiKind) |
 | Build/AE2 | `0x0D` | Spec label in `name[]`; no additional fields |
 | Skin | `0x0A` | `name[]` and `iconUrl[]` only |
@@ -218,7 +218,7 @@ localized wikis carry effectively no effect pages keyed by game id — see below
 shift-clicked effects have **no game-id-keyed source anywhere** (e.g. WvW commander broadcasts) and
 resolve `DR_Failed`; the consumer should degrade to its own bracketed text for those.
 
-**Trait links (`0x07`)** — surfaced in schema version 5. Gate on `schemaVersion >= 5`.
+**Trait links (`0x07`)** — added with **no ABI/schema-version change** (`DECODER_RING_API_VERSION` stays `5u`); there is no version gate for traits. A consumer that already renders skill-style records handles traits once it maps `0x07` in its render switch (the `description[512]`/`facts[16]` tooltip fields it uses have existed since schema version 3).
 
 Standalone trait chat links (shift-clicking a single trait) resolve to a full tooltip record —
 `name`, `iconUrl`, `description`, and pre-formatted `facts[]` — sourced from `/v2/traits/:id` and

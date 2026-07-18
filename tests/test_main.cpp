@@ -921,6 +921,47 @@ static void test_service_end_to_end() {
     svc.Shutdown();
 }
 
+static void test_service_trait_endtoend() {
+    using namespace PieUI::ChatLinks;
+    std::vector<DecoderRecord> events;
+    Decoder::DecoderService svc;
+    svc.Initialize("",
+        [&](const std::string& url, std::vector<char>& out){
+            if (url.find("/v2/traits/214") == std::string::npos) return false;   // only trait 214 resolves
+            out.assign(kTrait214, kTrait214 + std::strlen(kTrait214)); return true;
+        },
+        [&](const DecoderRecord& r){ events.push_back(r); });
+
+    DecoderRecord r;
+    // cold trait query -> NotReady, then a Resolved completion event.
+    CHECK(svc.Resolve(LINK_TRAIT, 214, r) == DR_NotReady);
+    for (int i=0;i<200 && events.empty();++i){ svc.Tick(); Decoder::DecoderService::SleepMs(5); }
+    CHECK(events.size() == 1);
+    CHECK(events[0].linkType == LINK_TRAIT);          // 0x07 carried on the record
+    CHECK(events[0].id == 214);
+    CHECK(events[0].status == DR_Resolved);
+    CHECK(std::strcmp(events[0].name, "Raging Storm") == 0);
+    CHECK(events[0].factCount >= 1);
+    // warm query returns immediately, no new event.
+    events.clear();
+    CHECK(svc.Resolve(LINK_TRAIT, 214, r) == DR_Resolved);
+    CHECK(std::strcmp(r.name, "Raging Storm") == 0);
+    svc.Tick();
+    CHECK(events.empty());
+    svc.Shutdown();
+}
+
+static void test_trait_invalid_id() {
+    using namespace PieUI::ChatLinks;
+    Decoder::DecoderService svc;
+    svc.Initialize("", [&](const std::string&, std::vector<char>&){ return false; },
+                   [](const DecoderRecord&){});
+    DecoderRecord r;
+    CHECK(svc.Resolve(LINK_TRAIT, 0, r) == DR_Failed);   // id 0 -> synchronous terminal failed
+    CHECK(r.linkType == LINK_TRAIT);
+    svc.Shutdown();
+}
+
 // Fix A — synchronous strand paths must surface as DR_Failed, never not-ready.
 static void test_resolve_synchronous_failed_paths() {
     using namespace PieUI::ChatLinks;
@@ -1183,6 +1224,8 @@ int main() {
     test_async_trait_path();
     test_service_language_switch();
     test_service_end_to_end();
+    test_service_trait_endtoend();
+    test_trait_invalid_id();
     std::printf(g_fail ? "TESTS FAILED (%d)\n" : "ALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

@@ -4,6 +4,7 @@
 #include "resolve/SkinResolver.h"
 #include "resolve/SkillResolver.h"
 #include "resolve/RecipeResolver.h"
+#include "resolve/TraitResolver.h"
 #include "resolve/PriceCache.h"
 #include "resolve/OfflineResolve.h"
 #include "resolve/RecordFill.h"
@@ -26,6 +27,7 @@ struct DecoderService::Impl {
         AsyncResolver<SkinTraits>   skin;
         AsyncResolver<SkillTraits>  skill;
         AsyncResolver<RecipeTraits> recipe;
+        AsyncResolver<TraitTraits>  trait;
     };
     std::string dir;
     HttpFetch   fetch;
@@ -43,6 +45,7 @@ struct DecoderService::Impl {
         s->skin.Initialize(dir, fetch, lang);   s->skin.SetFailCooldownSec(failCooldown);
         s->skill.Initialize(dir, fetch, lang);  s->skill.SetFailCooldownSec(failCooldown);
         s->recipe.Initialize(dir, fetch, lang); s->recipe.SetFailCooldownSec(failCooldown);
+        s->trait.Initialize(dir, fetch, lang);  s->trait.SetFailCooldownSec(failCooldown);
         auto& ref = *s; byLang[lang] = std::move(s); return ref;
     }
 
@@ -73,6 +76,12 @@ struct DecoderService::Impl {
         for (uint8_t i = 0; i < n; ++i) { r.facts[i].icon[0] = '\0'; CopyField(r.facts[i].text, m.lines[i]); }
         r.factCount = n;
     }
+    static void FillTrait(DecoderRecord& r, const TraitMeta& m) {
+        CopyField(r.name, m.name); CopyField(r.iconUrl, m.icon); CopyField(r.description, m.description);
+        uint8_t n = (uint8_t)(m.facts.size() < 16 ? m.facts.size() : 16);
+        for (uint8_t i = 0; i < n; ++i) { CopyField(r.facts[i].icon, m.facts[i].icon); CopyField(r.facts[i].text, m.facts[i].text); }
+        r.factCount = n;
+    }
 
     template <typename Res, typename Fill>
     void DrainOne(Res& res, uint8_t type, Fill fill) {
@@ -89,7 +98,8 @@ struct DecoderService::Impl {
         DrainOne(s.skin,   LINK_SKIN,   [](DecoderRecord& r, const SkinMeta& m){ FillSkin(r, m); });
         DrainOne(s.skill,  LINK_SKILL,  [](DecoderRecord& r, const SkillMeta& m){ FillSkill(r, m); });
         DrainOne(s.recipe, LINK_RECIPE, [](DecoderRecord& r, const RecipeMeta& m){ FillRecipe(r, m); });
-        s.item.Tick(); s.skin.Tick(); s.skill.Tick(); s.recipe.Tick();
+        DrainOne(s.trait,  LINK_TRAIT,  [](DecoderRecord& r, const TraitMeta& m){ FillTrait(r, m); });
+        s.item.Tick(); s.skin.Tick(); s.skill.Tick(); s.recipe.Tick(); s.trait.Tick();
     }
 };
 
@@ -103,7 +113,7 @@ void DecoderService::Shutdown() {
     if (!m_p) return;
     for (auto& kv : m_p->byLang) {
         kv.second->item.Shutdown(); kv.second->skin.Shutdown();
-        kv.second->skill.Shutdown(); kv.second->recipe.Shutdown();
+        kv.second->skill.Shutdown(); kv.second->recipe.Shutdown(); kv.second->trait.Shutdown();
     }
     m_p->price.Shutdown();
     delete m_p; m_p = nullptr;
@@ -113,7 +123,7 @@ void DecoderService::SetFailCooldownSec(int s) {
     m_p->failCooldown = s;
     for (auto& kv : m_p->byLang) {
         kv.second->item.SetFailCooldownSec(s); kv.second->skin.SetFailCooldownSec(s);
-        kv.second->skill.SetFailCooldownSec(s); kv.second->recipe.SetFailCooldownSec(s);
+        kv.second->skill.SetFailCooldownSec(s); kv.second->recipe.SetFailCooldownSec(s); kv.second->trait.SetFailCooldownSec(s);
     }
 }
 
@@ -166,6 +176,15 @@ DecoderStatus DecoderService::Resolve(uint8_t type, uint32_t id, const std::stri
             case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
         }
     }
+    if (type == LINK_TRAIT) {
+        TraitMeta m;
+        switch (m_p->Set(m_p->activeLang).trait.Get(id, m)) {
+            case GetState::Warm:    InitRecord(out, type, id, DR_Resolved); Impl::FillTrait(out, m); return DR_Resolved;
+            case GetState::Pending: InitRecord(out, type, id, DR_NotReady); return DR_NotReady;
+            case GetState::Failed:  InitRecord(out, type, id, DR_Failed);   return DR_Failed;
+        }
+    }
+
     InitRecord(out, type, id, DR_Failed);
     return DR_Failed;   // unsupported type
 }
